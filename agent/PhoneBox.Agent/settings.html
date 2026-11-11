@@ -486,6 +486,9 @@ dd { margin: 0; word-break: break-all; }
         <label class="check"><input type="checkbox" data-bind="display.pin"> Pin the panel: Home and Recents stay on it (Android asks once; hold Back and Overview together to unpin)</label>
         <label class="check"><input type="checkbox" data-bind="display.homeScreen"> Use the panel as the phone's home screen: it starts after a reboot and Home returns to it (turn off to get your launcher back)</label>
         <label class="check"><input type="checkbox" data-bind="display.keepAwake"> Keep the phone awake: turn off Android's screen saver (it starts on the charger) and keep the screen on while plugged in (set over USB)</label>
+        <label class="check"><input type="checkbox" data-bind="display.powerStandby"> Power standby: when the phone loses USB power (the server powered off), stop holding the screen on so it sleeps; wake it and show the panel again when power returns. Needs no root, but the phone's own screen-off timeout decides how fast it sleeps</label>
+        <div class="field"><label>Sleep after (seconds without USB power)</label><input type="number" min="3" max="600" data-bind="display.powerStandbyDelaySec" data-type="int">
+          <span class="hint">Grace period: a rebooting server drops USB only briefly, and the panel should stay lit through it.</span></div>
         <label class="check" id="followComputerLockOption" style="display:none"><input type="checkbox" data-bind="display.followComputerLock"> Follow the computer lock: turn the phone screen off when macOS locks; wake it and open PhoneBox when macOS unlocks (ADB required; unlock phones secured by a PIN or password manually)</label>
       </div>
 
@@ -2104,7 +2107,7 @@ async function load() {
   cfg = await res.json();
   cfg.pages ??= []; cfg.shortcuts ??= []; cfg.rules ??= []; cfg.display ??= {}; cfg.night ??= {}; cfg.weather ??= {}; cfg.lan ??= { enabled: false, port: 8766 }; cfg.updates ??= { auto: true, repo: 'ersinkoc/phonebox' }; cfg.claude ??= { phoneApprovals: true, timeoutSec: 90, onlyWhenAway: false };
   cfg.codexBar ??= { providers: ['claude', 'codex', 'antigravity'], rotate: true, pageSize: 2, rotateInterval: 8 };
-  for (const [k, v] of Object.entries({ idleReturnSec: 90, switchCountdownSec: 3, touchGraceSec: 20, minDwellSec: 15, holdMaxMin: 30, keepAwake: true })) cfg.display[k] ??= v;
+  for (const [k, v] of Object.entries({ idleReturnSec: 90, switchCountdownSec: 3, touchGraceSec: 20, minDwellSec: 15, holdMaxMin: 30, keepAwake: true, powerStandby: true, powerStandbyDelaySec: 30 })) cfg.display[k] ??= v;
   cfg.charge ??= { enabled: false, min: 50, max: 80, method: 'ha' };
   saved = JSON.stringify(cfg);
   renderPages(); renderDeck(); renderRules(); renderCalendars(); renderCharge(); bindForm(); changed(); loadInfo(); loadPhones();

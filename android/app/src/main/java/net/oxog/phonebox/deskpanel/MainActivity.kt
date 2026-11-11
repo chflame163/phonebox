@@ -3,6 +3,8 @@ package net.oxog.phonebox.deskpanel
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.ComponentName
 import android.content.Intent
 import android.content.IntentFilter
@@ -13,6 +15,9 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.BatteryManager
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.os.Bundle
 import android.os.Build
@@ -54,6 +59,78 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastLuxAt = 0L
     private var near: Boolean? = null
 
+    // Power standby: a panel fed from a server should sleep its screen when the server powers off (USB power cut) and
+    // light it again when power returns. The system's own screen-off timeout does the actual sleeping; this code only
+    // decides whether the app may hold the screen on. No root: a normal app cannot force the display off itself.
+    @Volatile private var standbyEnabled = true
+    @Volatile private var standbyDelayMs = 30_000L
+    @Volatile private var pluggedIn = true
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var powerReceiver: BroadcastReceiver? = null
+
+    /** The app may keep the display on whenever it is powered, or when standby is off entirely. */
+    private fun refreshKeepAwake() {
+        if (!standbyEnabled || pluggedIn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun registerPowerReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val connected = when (intent?.action) {
+                    Intent.ACTION_POWER_CONNECTED -> true
+                    Intent.ACTION_POWER_DISCONNECTED -> false
+                    else -> return
+                }
+                mainHandler.post { onPowerChanged(connected) }
+            }
+        }
+        powerReceiver = receiver
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else
+            registerReceiver(receiver, filter)
+        // The sticky battery broadcast settles the initial state (a reboot into an unpowered hub should not light up).
+        pluggedIn = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        refreshKeepAwake()
+    }
+
+    private fun onPowerChanged(connected: Boolean) {
+        pluggedIn = connected
+        mainHandler.removeCallbacksAndMessages(null)
+        if (connected) {
+            // Power is back: keep the screen on again and bring the panel forward, even without the agent's adb wake.
+            refreshKeepAwake()
+            wakeAndShowPanel()
+        } else if (standbyEnabled) {
+            // De-bounce: a rebooting server drops USB for a moment; a transient loss should not blank the panel.
+            mainHandler.postDelayed({
+                if (!pluggedIn && standbyEnabled)
+                    refreshKeepAwake() // releases the hold; the screen now sleeps at the system timeout
+            }, standbyDelayMs)
+        } else {
+            refreshKeepAwake()
+        }
+    }
+
+    /** Light the display from the phone side and put the panel in front; harmless when already showing. */
+    private fun wakeAndShowPanel() {
+        val pm = getSystemService(PowerManager::class.java)
+        @Suppress("DEPRECATION")
+        if (pm != null && !pm.isInteractive)
+            pm.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "PhoneBox:powerStandby",
+            ).acquire(3_000L) // the flag lets a plain app wake the screen; no root, no device owner needed
+        startActivity(Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    }
+
     private val assetLoader by lazy {
         WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -63,7 +140,7 @@ class MainActivity : Activity(), SensorEventListener {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // standby may release it again below
         link = AgentLink(this)
         stream = AgentStream(link) { event, data ->
             val js = "window.onAgentStream && window.onAgentStream(${JSONObject.quote(event)}, ${JSONObject.quote(data)})"
@@ -114,6 +191,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         web.loadUrl("https://$ASSET_HOST/assets/www/index.html")
         hideSystemUi()
+        registerPowerReceiver()
     }
 
     /**
@@ -177,6 +255,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        refreshKeepAwake() // a wake-up while unplugged (touch, home button) must not silently re-arm the hold
         web.onResume()
         stream.start()
         hideSystemUi()
@@ -189,6 +268,13 @@ class MainActivity : Activity(), SensorEventListener {
         stream.stop()
         web.onPause()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        powerReceiver?.let { runCatching { unregisterReceiver(it) } }
+        powerReceiver = null
+        super.onDestroy()
     }
 
     /**
@@ -303,6 +389,24 @@ class MainActivity : Activity(), SensorEventListener {
         /** Whether the volume keys flip pages (true) or change the phone's volume (false). */
         @JavascriptInterface
         fun setVolumeKeys(key: String, enabled: Boolean) { if (ok(key)) volumeKeysFlipPages = enabled }
+
+        /**
+         * Power standby (on by default): when the phone's USB power is cut — the server powered off — the panel stops
+         * holding the screen on so it sleeps at the system timeout, and wakes itself when power returns. `delaySec` is
+         * the grace period that absorbs a reboot's brief power blip.
+         */
+        @JavascriptInterface
+        fun setPowerStandby(key: String, enabled: Boolean, delaySec: Int) {
+            if (!ok(key)) return
+            standbyEnabled = enabled
+            standbyDelayMs = delaySec.coerceIn(3, 600) * 1_000L
+            // A settings change must take effect at once, either way, even while unpowered.
+            mainHandler.removeCallbacksAndMessages(null)
+            runOnUiThread {
+                if (pluggedIn || !standbyEnabled) refreshKeepAwake()
+                else mainHandler.postDelayed({ if (!pluggedIn && standbyEnabled) refreshKeepAwake() }, standbyDelayMs)
+            }
+        }
 
         /** Which sensors the phone has: {"light": true, "proximity": true}. */
         @JavascriptInterface

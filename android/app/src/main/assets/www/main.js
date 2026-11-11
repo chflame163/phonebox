@@ -28,7 +28,7 @@ export const $ = (id) => document.getElementById(id);
 // The native bridge (window.Android) is in every frame, sandboxed widgets included, so each call carries a key that only
 // the panel's own frames receive (MainActivity.bridgeKey). This wrapper adds it.
 const BRIDGE = ['battery', 'buzz', 'haptic', 'pcs', 'selectPc', 'forgetPc', 'setBrightness', 'setHomeScreen', 'setOrientation',
-  'setPinned', 'setVolumeKeys', 'transport', 'sensors', 'version'];
+  'setPinned', 'setVolumeKeys', 'setPowerStandby', 'transport', 'sensors', 'version'];
 export const bridge = typeof Android === 'undefined' ? null : Object.fromEntries(BRIDGE.filter((m) => typeof Android[m] === 'function')
   .map((m) => [m, (...args) => Android[m](window.__phoneboxKey || '', ...args)]));
 // Live preview inside the agent's layout editor: the layout comes from the editor (unsaved), not from the agent.
@@ -50,6 +50,7 @@ export const DEFAULT_CFG = {
   weather: { city: 'Tallinn', lat: 59.437, lon: 24.745 },
   night: { enabled: true, start: '00:30', end: '07:30', brightness: 0.02 },
   display: { showSeconds: true, idleReturnSec: 90, vibrate: true, volumeKeys: true },
+  // note: powerStandby / powerStandbyDelaySec default to on/30 s in the agent and in MainActivity; absent = on
   pages: FALLBACK_PAGES,
   shortcuts: [],
 };
@@ -1265,6 +1266,8 @@ export function applyDisplay() {
   try { bridge.setPinned && bridge.setPinned(d.pin === true); } catch (_) {}
   try { bridge.setOrientation && bridge.setOrientation(['portrait', 'auto'].includes(d.orientation) ? d.orientation : 'landscape'); } catch (_) {}
   try { bridge.setHomeScreen && bridge.setHomeScreen(d.homeScreen === true); } catch (_) {}
+  // absent (older agent, or no agent at all) keeps standby on — that is the point of the feature
+  try { bridge.setPowerStandby && bridge.setPowerStandby(d.powerStandby !== false, +(d.powerStandbyDelaySec ?? 30)); } catch (_) {}
   applyBrightness(true);
 }
 

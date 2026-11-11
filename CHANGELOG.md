@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Power standby: a panel wired to a server that cuts USB power when it powers off no longer burns its screen all night.
+  When the phone loses power, the panel stops holding the screen on after a grace period (default 30 s, so a rebooting
+  server's power blip does not blank it) and the display sleeps at the phone's own screen-off timeout; when power
+  returns, the panel wakes the screen itself and comes back to the front, without waiting for the agent's adb wake.
+  Runs entirely on the phone — no root, no device owner, and it also covers a crashed or unplugged server. Settings ›
+  Display › Kiosk › Power standby (on by default; `display.powerStandby`, `display.powerStandbyDelaySec`).
+
 ## 0.9.3 — 2026-11-11
 
 - Support Podman for the containers widget ([#12](https://github.com/ersinkoc/phonebox/pull/12)). Parse Podman's JSON

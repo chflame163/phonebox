@@ -117,6 +117,11 @@ public sealed class DisplayConfig
 
     /// <summary>Over USB, turn off Android's screen saver (it starts on the dock / charger) and keep the phone awake while it is plugged in.</summary>
     public bool KeepAwake { get; set; } = true;
+    /// <summary>Power standby (on the phone, no root): when the phone's USB power is cut — the server powered off — the panel
+    /// stops holding the screen on so it sleeps at the system timeout; when power returns it wakes and shows the panel again.</summary>
+    public bool PowerStandby { get; set; } = true;
+    /// <summary>Grace period in seconds after the power is lost before the screen may sleep; absorbs a rebooting server's power blip.</summary>
+    public int PowerStandbyDelaySec { get; set; } = 30;
     /// <summary>On macOS, sleep the connected phone when the computer locks; wake it and open PhoneBox after unlock.</summary>
     public bool FollowComputerLock { get; set; }
     /// <summary>The page the panel returns to (idle return, Back); null = the first page.</summary>
