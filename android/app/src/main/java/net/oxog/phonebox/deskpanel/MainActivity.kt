@@ -88,11 +88,15 @@ class MainActivity : Activity(), SensorEventListener {
         }
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                // A charged-to-100% phone drops EXTRA_PLUGGED while EXTRA_STATUS keeps reporting CHARGING/FULL:
-                // treat those states as "cable in" too, otherwise a full panel phone sleeps during normal operation.
                 val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
                     ?: BatteryManager.BATTERY_STATUS_UNKNOWN
-                val plugged = PowerReceiver.edge(intent, "runtime") ?: return
+                // A charged-to-100% phone drops EXTRA_PLUGGED while EXTRA_STATUS keeps reporting CHARGING/FULL:
+                // treat those states as "cable in" too, otherwise a fully-charged desk phone sleeps for good.
+                val plugged = (intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
+                    status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+                if (plugged == lastPlugged) return
+                lastPlugged = plugged
+                android.util.Log.i("PhoneBox", "plug edge via battery-changed: plugged=" + plugged)
                 android.util.Log.i("PhoneBox", "plug edge via battery-changed: plugged=" + plugged)
                 mainHandler.post { onPowerChanged(plugged) }
             }
@@ -110,7 +114,7 @@ class MainActivity : Activity(), SensorEventListener {
             pluggedIn = (sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
                 st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
         }
-        PowerReceiver.lastPlugged = pluggedIn
+        lastPlugged = pluggedIn
         android.util.Log.i("PhoneBox", "standby receiver registered, init pluggedIn=" + pluggedIn)
         refreshKeepAwake()
     }
@@ -499,32 +503,5 @@ class MainActivity : Activity(), SensorEventListener {
         private const val PANEL_HEADER = "X-PhoneBox-Panel"
         private val READ_ONLY_IMAGES = setOf("/agent/api/art", "/agent/api/procs/icon")
         private fun FORBIDDEN() = WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", NO_STORE, java.io.ByteArrayInputStream(ByteArray(0)))
-    }
-}
-
-/**
- * Shared plug-edge detection for both receiver paths (manifest entry + the primary context-registered one; see
- * AndroidManifest). On Android 8+ only the context-registered receiver actually receives this sticky broadcast,
- * but the manifest entry documents the feature and revives the component on older OS lines.
- */
-class PowerReceiver : BroadcastReceiver() {
-    companion object {
-        @Volatile var lastPlugged = true
-
-        /** True/false on a plug edge, null when the state did not change. */
-        fun edge(intent: Intent?, tag: String): Boolean? {
-            val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
-                ?: BatteryManager.BATTERY_STATUS_UNKNOWN
-            val plugged = (intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
-                status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-            if (plugged == lastPlugged) return null
-            lastPlugged = plugged
-            android.util.Log.i("PhoneBox", "plug edge ($tag): plugged=" + plugged)
-            return plugged
-        }
-    }
-
-    override fun onReceive(context: Context, intent: Intent) {
-        edge(intent, "static")
     }
 }
