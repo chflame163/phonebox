@@ -1,0 +1,115 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 tools/check-release.py
+
+  android:
+    name: Android panel (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle   # the Gradle distribution and dependencies, so a download hiccup does not fail the build
+      - name: Check Android API compatibility and build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew lintDebug assembleDebug --no-daemon --console=plain
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: phonebox-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  ui:
+    name: UI tests (panel and settings in a browser)
+    # Keep browser dependencies stable during the ubuntu-latest image migration.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install Playwright
+        working-directory: tools/ui-tests
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: Run the tests against the web demo
+        working-directory: tools/ui-tests
+        run: npx playwright test
+        env:
+          CI: '1'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ui-test-report
+          path: |
+            ui-test-report/
+            tools/ui-tests/test-results/
+
+  agent:
+    name: Agent (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, rid: win-x64, tfm: net10.0-windows10.0.19041.0 }
+          - { os: ubuntu-latest, rid: linux-x64, tfm: net10.0 }
+          - { os: macos-latest, rid: osx-arm64, tfm: net10.0 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Unit tests
+        run: dotnet test agent/PhoneBox.Agent.Tests --nologo
+      - name: Windows installer regression checks
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: ./tools/test-install-apk.ps1
+      - name: Unix installer regression checks with the system Bash
+        if: matrix.rid != 'win-x64'
+        run: python3 tools/test-unix-installer.py --bash /bin/bash
+      - name: Publish agent
+        run: dotnet publish agent/PhoneBox.Agent -c Release -f ${{ matrix.tfm }} -r ${{ matrix.rid }} --self-contained false -o out --nologo
+      - name: Smoke test (starts, serves the API)
+        if: matrix.rid != 'win-x64'
+        run: |
+          chmod +x out/PhoneBoxAgent
+          out/PhoneBoxAgent > agent.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8765/api/state > state.json && break; sleep 1; done
+          sleep 4
+          curl -sf http://127.0.0.1:8765/api/state > state.json
+          curl -sf "http://127.0.0.1:8765/api/procs?top=3" > /dev/null; sleep 4
+          curl -sf "http://127.0.0.1:8765/api/procs?top=3" > procs.json
+          cat agent.log
+          head -c 700 state.json; echo
+          head -c 500 procs.json; echo
+          curl -sf http://127.0.0.1:8765/api/info; echo
+          # the system and process readings must work on this platform
+          python3 -c "import json; s=json.load(open('state.json')); p=json.load(open('procs.json')); assert s['pc'] and s['pc']['cpu'] is not None and s['pc']['ramTotalGb'] > 0, s['pc']; assert p['groups'], p; print('cpu', s['pc']['cpu'], 'ram', s['pc']['ramUsedGb'], '/', s['pc']['ramTotalGb'], 'procs', p['total'])"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: phonebox-agent-${{ matrix.rid }}
+          path: out/
+
+  artifact-transfer:
+    name: Artifact transfer contract
+    uses: ./.github/workflows/artifact-contract.yml

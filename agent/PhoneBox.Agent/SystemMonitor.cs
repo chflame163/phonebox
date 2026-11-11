@@ -1,0 +1,297 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace PhoneBox.Agent;
+
+public sealed record GpuInfo(string Name, double? Util, double? Temp, double? Power, double? PowerLimit,
+    double? VramUsed, double? VramTotal, double? Fan, double? Clock);
+
+public sealed record DiskInfo(string Name, double UsedGb, double TotalGb);
+
+public sealed record PcSnapshot(double? Cpu, double? CpuTemp, string CpuName, double RamUsedGb, double RamTotalGb,
+    GpuInfo? Gpu, double NetDownBps, double NetUpBps, IReadOnlyList<DiskInfo> Disks, long UptimeSec);
+
+/// <summary>Samples CPU, RAM, network, disk and NVIDIA GPU metrics once a second.</summary>
+public sealed class SystemMonitor(ILogger<SystemMonitor> log) : BackgroundService
+{
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMilliseconds(600) };
+    private readonly string _cpuName = ReadCpuName();
+
+    private volatile PcSnapshot? _snap;
+    private volatile GpuInfo? _gpu;
+    private double? _cpuTemp;
+    private IReadOnlyList<DiskInfo> _disks = [];
+
+    public PcSnapshot? Snapshot() => _snap;
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        _ = Task.Run(() => GpuLoop(ct), ct);
+        _ = Task.Run(() => CpuTempLoop(ct), ct);
+
+        var (idle0, total0) = CpuTimes();
+        var (rx0, tx0) = NetBytes();
+        var t0 = Stopwatch.GetTimestamp();
+        var tick = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(1000, ct);
+
+            var (idle1, total1) = CpuTimes();
+            var total = total1 - total0;
+            double? cpu = total > 0 ? Math.Clamp(100.0 * (total - (idle1 - idle0)) / total, 0, 100) : null;
+            (idle0, total0) = (idle1, total1);
+
+            var (rx1, tx1) = NetBytes();
+            var t1 = Stopwatch.GetTimestamp();
+            var secs = Math.Max(0.001, (t1 - t0) / (double)Stopwatch.Frequency);
+            var down = Math.Max(0, (rx1 - rx0) / secs);
+            var up = Math.Max(0, (tx1 - tx0) / secs);
+            (rx0, tx0, t0) = (rx1, tx1, t1);
+
+            if (tick++ % 15 == 0) _disks = ReadDisks();
+
+            var (memUsed, memTotal) = Memory();
+            const double Gb = 1024d * 1024 * 1024;
+
+            _snap = new PcSnapshot(
+                Cpu: cpu is { } c ? Math.Round(c, 1) : null,
+                CpuTemp: _cpuTemp,
+                CpuName: _cpuName,
+                RamUsedGb: Math.Round(memUsed / Gb, 1),
+                RamTotalGb: Math.Round(memTotal / Gb, 1),
+                Gpu: _gpu,
+                NetDownBps: Math.Round(down),
+                NetUpBps: Math.Round(up),
+                Disks: _disks,
+                UptimeSec: Environment.TickCount64 / 1000);
+        }
+    }
+
+    // Keeps nvidia-smi running and reads one line per second (macOS: asks ioreg every two seconds instead).
+    private async Task GpuLoop(CancellationToken ct)
+    {
+        if (OperatingSystem.IsMacOS()) { await AppleGpuLoop(ct); return; }
+        var name = "GPU";
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                name = (await RunAsync("nvidia-smi", "--query-gpu=name --format=csv,noheader", ct)).Trim().Split('\n')[0].Trim();
+                var psi = new ProcessStartInfo("nvidia-smi",
+                    "--query-gpu=utilization.gpu,temperature.gpu,power.draw,power.limit,memory.used,memory.total,fan.speed,clocks.gr " +
+                    "--format=csv,noheader,nounits -lms 1000")
+                { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = AppPaths.NeutralCwd };
+                using var p = Process.Start(psi)!;
+                JobObject.Track(p);
+                using var reg = ct.Register(() => { try { p.Kill(); } catch { } });
+                while (await p.StandardOutput.ReadLineAsync(ct) is { } line)
+                {
+                    var f = line.Split(',').Select(s => double.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : (double?)null).ToArray();
+                    if (f.Length < 8) continue;
+                    _gpu = new GpuInfo(name, f[0], f[1], f[2], f[3], f[4] / 1024, f[5] / 1024, f[6], f[7]);
+                }
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { log.LogDebug("nvidia-smi: {Msg}", ex.Message); }
+            _gpu = null;
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        }
+    }
+
+    /// <summary>macOS has no nvidia-smi; the GPU's load and memory come from the IOAccelerator entry of ioreg.</summary>
+    private async Task AppleGpuLoop(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("ioreg", "-r -d 1 -w 0 -c IOAccelerator")
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = AppPaths.NeutralCwd,
+                };
+                using var p = Process.Start(psi)!;
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                try
+                {
+                    var text = await p.StandardOutput.ReadToEndAsync(cts.Token);
+                    await p.WaitForExitAsync(cts.Token);
+                    _gpu = ParseAppleGpu(text, Memory().Total);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { try { p.Kill(); } catch { } _gpu = null; }
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { log.LogDebug("apple-gpu: {Msg}", ex.Message); _gpu = null; }
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+    }
+
+    /// <summary>Reads the GPU from the ioreg text. The memory is unified: the total is the machine's RAM, the used part what the GPU holds.</summary>
+    internal static GpuInfo? ParseAppleGpu(string ioreg, double totalMemoryBytes)
+    {
+        var util = Regex.Match(ioreg, "\"Device Utilization %\"\\s*=\\s*(\\d+)");
+        if (!util.Success) return null; // no accelerator entry: nothing to show
+        var model = Regex.Match(ioreg, "\"model\"\\s*=\\s*\"([^\"]+)\"");
+        var alloc = Regex.Match(ioreg, "\"Alloc system memory\"\\s*=\\s*(\\d+)");
+        const double Gb = 1024.0 * 1024 * 1024;
+        return new GpuInfo(model.Success ? model.Groups[1].Value : "Apple GPU",
+            double.Parse(util.Groups[1].Value, CultureInfo.InvariantCulture), null, null, null,
+            alloc.Success ? Math.Round(double.Parse(alloc.Groups[1].Value, CultureInfo.InvariantCulture) / Gb, 1) : null,
+            totalMemoryBytes > 0 ? Math.Round(totalMemoryBytes / Gb, 1) : null, null, null);
+    }
+
+    // CPU temperature: Windows from LibreHardwareMonitor's web server (port 8085), when it is running; Linux from hwmon.
+    private async Task CpuTempLoop(CancellationToken ct)
+    {
+#if !WINDOWS
+        while (!ct.IsCancellationRequested)
+        {
+            _cpuTemp = UnixSystem.CpuTemp();
+            await Task.Delay(_cpuTemp is null ? 30_000 : 2000, ct);
+        }
+        return;
+#else
+        string[] names = ["Core (Tctl/Tdie)", "Tctl/Tdie", "CPU Package", "Tdie", "Tctl", "Core (Tdie)"];
+#pragma warning disable CS0162
+        while (!ct.IsCancellationRequested)
+        {
+            var delay = TimeSpan.FromSeconds(2);
+            try
+            {
+                using var doc = JsonDocument.Parse(await _http.GetStringAsync("http://127.0.0.1:8085/data.json", ct));
+                _cpuTemp = FindTemp(doc.RootElement, names);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch
+            {
+                _cpuTemp = null;
+                delay = TimeSpan.FromSeconds(30);
+            }
+            await Task.Delay(delay, ct);
+        }
+#endif
+    }
+
+    private static double? FindTemp(JsonElement node, string[] names)
+    {
+        if (node.TryGetProperty("Text", out var text) && names.Contains(text.GetString())
+            && node.TryGetProperty("Value", out var val) && val.GetString() is { } s && s.Contains('°'))
+        {
+            var num = s.Split(' ')[0].Replace(',', '.');
+            if (double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var t)) return t;
+        }
+        if (node.TryGetProperty("Children", out var kids))
+            foreach (var k in kids.EnumerateArray())
+                if (FindTemp(k, names) is { } t) return t;
+        return null;
+    }
+
+    private static (long rx, long tx) NetBytes()
+    {
+        long rx = 0, tx = 0;
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (ni.OperationalStatus != OperationalStatus.Up) continue;
+            if (ni.NetworkInterfaceType is not (NetworkInterfaceType.Ethernet or NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.GigabitEthernet)) continue;
+            var d = ni.Description + " " + ni.Name;
+            if (!OperatingSystem.IsWindows() && (ni.Name.StartsWith("docker") || ni.Name.StartsWith("veth") || ni.Name.StartsWith("br-")
+                || ni.Name.StartsWith("virbr") || ni.Name.StartsWith("utun") || ni.Name.StartsWith("awdl") || ni.Name.StartsWith("llw"))) continue;
+            if (d.Contains("Virtual", StringComparison.OrdinalIgnoreCase) || d.Contains("Hyper-V", StringComparison.OrdinalIgnoreCase)
+                || d.Contains("vEthernet", StringComparison.OrdinalIgnoreCase) || d.Contains("VMware", StringComparison.OrdinalIgnoreCase)
+                || d.Contains("WSL", StringComparison.OrdinalIgnoreCase) || d.Contains("TAP", StringComparison.Ordinal)
+                || d.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                var s = ni.GetIPStatistics();
+                rx += s.BytesReceived;
+                tx += s.BytesSent;
+            }
+            catch { }
+        }
+        return (rx, tx);
+    }
+
+    private static IReadOnlyList<DiskInfo> ReadDisks()
+    {
+        const double Gb = 1024d * 1024 * 1024;
+        var drives = DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady && SafeSize(d) > 2 * Gb);
+        if (!OperatingSystem.IsWindows())
+            // Linux / macOS: real volumes only (no snaps, boot partitions or macOS system snapshots)
+            drives = drives.Where(d => d.Name == "/" || d.Name.StartsWith("/home") || d.Name.StartsWith("/mnt/") || d.Name.StartsWith("/media/")
+                                       || d.Name.StartsWith("/Volumes/") || d.Name.StartsWith("/data"))
+                .Where(d => !d.Name.Contains("/wsl") && !d.Name.Contains("docker") && !d.Name.StartsWith("/mnt/c") && d.Name.Length > 0)
+                .DistinctBy(d => (SafeSize(d), d.TotalFreeSpace / (1L << 30)));
+        return drives
+            .Select(d => new DiskInfo(DiskLabel(d.Name), Math.Round((d.TotalSize - d.TotalFreeSpace) / Gb), Math.Round(d.TotalSize / Gb)))
+            .Take(6)
+            .ToList();
+    }
+
+    private static long SafeSize(DriveInfo d) { try { return d.TotalSize; } catch { return 0; } }
+
+    private static string DiskLabel(string name) =>
+        OperatingSystem.IsWindows() ? name.TrimEnd('\\') : name == "/" ? "/" : Path.GetFileName(name.TrimEnd('/'));
+
+    private static string ReadCpuName()
+    {
+#if !WINDOWS
+        return UnixSystem.CpuName();
+#else
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
+            return (key?.GetValue("ProcessorNameString") as string)?.Trim() ?? "CPU";
+        }
+        catch { return "CPU"; }
+#endif
+    }
+
+    private static async Task<string> RunAsync(string file, string args, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo(file, args) { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = AppPaths.NeutralCwd };
+        using var p = Process.Start(psi)!;
+        var output = await p.StandardOutput.ReadToEndAsync(ct);
+        await p.WaitForExitAsync(ct);
+        return output;
+    }
+
+#if WINDOWS
+    private static (long Idle, long Total) CpuTimes()
+    {
+        GetSystemTimes(out var idle, out var kernel, out var user);
+        return (idle, kernel + user); // kernel time includes idle time
+    }
+
+    private static (double Used, double Total) Memory()
+    {
+        var mem = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        GlobalMemoryStatusEx(ref mem);
+        return (mem.ullTotalPhys - mem.ullAvailPhys, mem.ullTotalPhys);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength, dwMemoryLoad;
+        public ulong ullTotalPhys, ullAvailPhys, ullTotalPageFile, ullAvailPageFile, ullTotalVirtual, ullAvailVirtual, ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX m);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+#else
+    private static (long Idle, long Total) CpuTimes() => UnixSystem.CpuTimes();
+    private static (double Used, double Total) Memory() => UnixSystem.Memory();
+#endif
+}

@@ -1,0 +1,336 @@
+using System.Diagnostics;
+using System.Text.Json;
+
+namespace PhoneBox.Agent;
+
+/// <summary>
+/// Automation rules (Settings › Rules): checks every rule once a second and, when its condition starts to hold, switches
+/// the phone to a page, shows a notification or pushes a value. Rules marked "while active" undo their effect when the
+/// condition ends: the phone goes back to the page it was on and a pushed value is removed again.
+/// </summary>
+public sealed class RuleEngine(ConfigStore config, PushStore push, SessionMonitor sessions, MediaMonitor media, SystemMonitor system,
+    PrivacyMonitor privacy, CalendarMonitor calendar, ObsMonitor obs, QuotaMonitor quotas, GitHubMonitor github, BatteryMonitor batteries,
+    PingMonitor ping, AudioControl audio, ILogger<RuleEngine> log) : BackgroundService
+{
+    /// <summary>CPU spikes are normal; the CPU rule waits this long unless the rule sets its own "for" time.</summary>
+    private const int CpuSustainSec = 15;
+    /// <summary>A condition has to stay off this long before a rule ends, so a flickering condition does not flap.</summary>
+    public const int ReleaseSec = 4;
+
+    private sealed class RuleState(RuleConfig rule)
+    {
+        public RuleConfig Rule { get; } = rule;
+        public bool Active;
+        public long TrueSince;
+        public long FalseSince;
+    }
+
+    // keyed by the rule's serialized form, so editing a rule ends the old version and starts the new one
+    private readonly Dictionary<string, RuleState> _states = [];
+    // last time each rule (by id) fired, for the cooldown; survives edits of the rule
+    private readonly Dictionary<string, long> _fired = [];
+    private volatile string[] _active = [];
+    private long _pausedUntil; // unix ms
+    private HashSet<string>? _procs;
+    private long _procsAt;
+    private double _idle;
+    private long _idleAt;
+
+    /// <summary>Ids of the rules whose condition holds right now (the phone keeps a rule's page only while it is listed).</summary>
+    public IReadOnlyList<string> Active() => _active;
+
+    /// <summary>Unix ms until which rules are paused (from the phone or the settings), or null.</summary>
+    public long? PausedUntil() => Interlocked.Read(ref _pausedUntil) is var t && t > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() ? t : null;
+
+    /// <summary>Pauses all rules for a while (0 resumes). Rules that hold end now and fire again after the pause.</summary>
+    public void Pause(int minutes)
+    {
+        Interlocked.Exchange(ref _pausedUntil, minutes <= 0 ? 0 : DateTimeOffset.UtcNow.AddMinutes(Math.Min(minutes, 24 * 60)).ToUnixTimeMilliseconds());
+        if (minutes <= 0) log.LogInformation("rules resumed");
+        else log.LogInformation("rules paused for {Min} min", minutes);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        await Task.Delay(3000, ct); // let the monitors take their first readings
+        while (!ct.IsCancellationRequested)
+        {
+            try { Evaluate(); }
+            catch (Exception ex) { log.LogWarning("rules: {Msg}", ex.Message); }
+            await Task.Delay(1000, ct);
+        }
+    }
+
+    internal void Evaluate() // internal: the tests drive it directly
+    {
+        var rules = config.Get().Rules.Where(r => r.Enabled).ToList();
+        var keys = rules.ToDictionary(r => JsonSerializer.Serialize(r), r => r);
+        var paused = PausedUntil() is not null;
+
+        foreach (var (key, st) in _states.Where(kv => paused || !keys.ContainsKey(kv.Key)).ToList())
+        {
+            if (st.Active && st.Rule.WhileActive)
+            {
+                Undo(st.Rule);
+                // the edit or the pause took the effect back, not the condition: the new version (or the rule after the
+                // pause) may bring it back at once instead of waiting out the rest time
+                _fired.Remove(st.Rule.Id);
+            }
+            _states.Remove(key);
+        }
+        if (paused) { _active = []; return; }
+
+        var now = Environment.TickCount64;
+        var clock = DateTime.Now;
+        var active = new List<string>();
+        foreach (var (key, rule) in keys)
+        {
+            if (!_states.TryGetValue(key, out var st)) _states[key] = st = new RuleState(rule);
+            var (holds, detail) = Allowed(rule, clock) ? Check(rule) : (false, "");
+            if (holds) { st.FalseSince = 0; if (st.TrueSince == 0) st.TrueSince = now; }
+            else { st.TrueSince = 0; if (st.FalseSince == 0) st.FalseSince = now; }
+
+            var sustainSec = rule.ForSec > 0 ? rule.ForSec : rule.When == "cpu-above" ? CpuSustainSec : 0;
+            var sustained = holds && now - st.TrueSince >= sustainSec * 1000L;
+            var cooled = !_fired.TryGetValue(rule.Id, out var last) || now - last >= rule.CooldownMin * 60_000L;
+
+            if (sustained && !st.Active && cooled)
+            {
+                st.Active = true;
+                _fired[rule.Id] = now;
+                log.LogInformation("rule {Id} fired ({Detail})", rule.Id, detail);
+                Do(rule, detail);
+            }
+            else if (!holds && st.Active && (now - st.FalseSince >= ReleaseSec * 1000L || rule.When == "time"))
+            {
+                st.Active = false;
+                log.LogInformation("rule {Id} ended", rule.Id);
+                if (rule.WhileActive) Undo(rule);
+            }
+            if (st.Active) active.Add(rule.Id);
+        }
+        _active = [.. active];
+    }
+
+    /// <summary>The rule's extra conditions: only on some days, only at some hours.</summary>
+    public static bool Allowed(RuleConfig r, DateTime now) =>
+        OnDay(r.Days, now.DayOfWeek) && (string.IsNullOrWhiteSpace(r.During) || InWindow(r.During, now.TimeOfDay));
+
+    private static readonly string[] DayNames = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+    private static readonly string[] WeekOrder = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+    /// <summary>"mon,tue,wed" (empty = every day).</summary>
+    public static bool OnDay(string? days, DayOfWeek day) =>
+        string.IsNullOrWhiteSpace(days) || days.Split(',', StringSplitOptions.TrimEntries).Contains(DayNames[(int)day], StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Cleans a day list: known day names in week order; null means every day.</summary>
+    public static string? NormalizeDays(string? days)
+    {
+        if (string.IsNullOrWhiteSpace(days)) return null;
+        var set = days.ToLowerInvariant().Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+        if (set.Remove("weekdays")) set.UnionWith(["mon", "tue", "wed", "thu", "fri"]);
+        if (set.Remove("weekends")) set.UnionWith(["sat", "sun"]);
+        var list = WeekOrder.Where(set.Contains).ToList();
+        return list.Count is 0 or 7 ? null : string.Join(',', list);
+    }
+
+    /// <summary>Runs a rule's action once, regardless of its condition (the Test button in the settings).</summary>
+    public void Test(RuleConfig rule) => Do(rule, "test");
+
+    private void Do(RuleConfig r, string detail)
+    {
+        switch (r.Then)
+        {
+            case "goto" when !string.IsNullOrWhiteSpace(r.Page):
+                push.Emit("goto", JsonSerializer.SerializeToElement(new
+                {
+                    page = r.Page, rule = r.Id, hold = r.WhileActive, name = r.Name.Length > 0 ? r.Name : null,
+                    detail, priority = r.Priority, countdown = r.CountdownSec,
+                }));
+                break;
+            case "notify":
+                var title = r.Name.Length > 0 ? r.Name : "PhoneBox";
+                var text = string.IsNullOrWhiteSpace(r.Text) ? detail : r.Text.Replace("{detail}", detail);
+                push.Emit("notify", JsonSerializer.SerializeToElement(new { title, text, level = r.Level ?? "info", wake = r.Level is "warn" or "error" }));
+                break;
+            case "push" when !string.IsNullOrWhiteSpace(r.Key) && PushStore.ValidKey(r.Key):
+                var value = (r.PushValue ?? "true").Replace("{detail}", detail);
+                push.Set(r.Key, PushStore.ParseValue(value), null);
+                break;
+            case "shortcut" when !string.IsNullOrWhiteSpace(r.Shortcut):
+                if (Shortcuts.Run(config.Get(), r.Shortcut, log, push, audio) is { } error) log.LogWarning("rule {Id}: {Error}", r.Id, error);
+                break;
+        }
+    }
+
+    private void Undo(RuleConfig r)
+    {
+        if (r.Then == "goto") push.Emit("back", JsonSerializer.SerializeToElement(new { rule = r.Id }));
+        else if (r.Then == "push" && !string.IsNullOrWhiteSpace(r.Key)) push.Remove(r.Key);
+        else if (r.Then == "shortcut" && config.Get().Shortcuts.FirstOrDefault(s => s.Id == r.Shortcut) is { Toggle: true } sc
+                 && Shortcuts.State(sc, push, audio) != false)
+            Shortcuts.Run(config.Get(), sc.Id, log, push, audio); // a toggle switches back off
+    }
+
+    private (bool Holds, string Detail) Check(RuleConfig r)
+    {
+        var match = r.Match?.Trim() ?? "";
+        var names = match.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        switch (r.When)
+        {
+            case "session-waiting":
+            case "session-busy":
+            {
+                var status = r.When == "session-waiting" ? "waiting" : "busy";
+                var s = sessions.Snapshot().FirstOrDefault(s => s.Status == status && (names.Length == 0
+                    || names.Any(n => s.Project.Contains(n, StringComparison.OrdinalIgnoreCase) || s.Tool.Equals(n, StringComparison.OrdinalIgnoreCase))));
+                return s is null ? (false, "") : (true, status == "waiting" ? $"{s.Project}: {s.WaitingFor ?? "needs you"}" : $"{s.Project} is working");
+            }
+            case "media-playing":
+            {
+                var m = media.Snapshot();
+                var ok = m is { Playing: true } && (names.Length == 0 || names.Any(n => m.App.Contains(n, StringComparison.OrdinalIgnoreCase)));
+                return ok ? (true, string.IsNullOrEmpty(m!.Artist) ? m.Title : $"{m.Title} · {m.Artist}") : (false, "");
+            }
+            case "process-running":
+            {
+                var procs = Processes();
+                var hit = names.Select(n => n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? n[..^4] : n)
+                    .FirstOrDefault(n => procs.Contains(n) || procs.Any(p => p.Length >= 15 && n.StartsWith(p, StringComparison.OrdinalIgnoreCase)));
+                return hit is null ? (false, "") : (true, hit);
+            }
+            case "mic-in-use":
+            case "camera-in-use":
+            {
+                var p = privacy.Snapshot();
+                var apps = (r.When == "mic-in-use" ? p?.MicApps : p?.CameraApps) ?? [];
+                var hit = apps.FirstOrDefault(a => names.Length == 0 || names.Any(n => a.Contains(n, StringComparison.OrdinalIgnoreCase)));
+                return hit is null ? (false, "") : (true, hit);
+            }
+            case "obs-live":
+            {
+                var o = obs.Snapshot();
+                return obs.Live ? (true, o.Streaming ? "OBS is streaming" : "OBS is recording") : (false, "");
+            }
+            case "calendar-event":
+            {
+                var ev = calendar.Current(names);
+                return ev is null ? (false, "") : (true, ev.Title);
+            }
+            case "cpu-above":
+            {
+                var cpu = system.Snapshot()?.Cpu;
+                return cpu >= (r.Value ?? 85) ? (true, $"CPU {cpu:0}%") : (false, "");
+            }
+            case "idle":
+            {
+                var minutes = r.Value ?? 5;
+                return IdleSeconds() >= minutes * 60 ? (true, $"away for {minutes:0} min") : (false, "");
+            }
+            case "time":
+                return InWindow(match, DateTime.Now.TimeOfDay) ? (true, match) : (false, "");
+            case "quota-above":
+            {
+                var limit = r.Value ?? 80;
+                foreach (var q in quotas.Snapshot())
+                {
+                    if (names.Length > 0 && !names.Any(n => q.Id.Contains(n, StringComparison.OrdinalIgnoreCase) || q.Name.Contains(n, StringComparison.OrdinalIgnoreCase))) continue;
+                    var hit = q.Limits.Where(l => l.Percent >= limit).OrderByDescending(l => l.Percent).FirstOrDefault();
+                    if (hit is not null) return (true, $"{q.Name} {hit.Label} {hit.Percent:0}%");
+                }
+                return (false, "");
+            }
+            case "review-requested":
+            {
+                var reviews = github.Snapshot()?.ReviewRequests ?? [];
+                var pr = reviews.FirstOrDefault(p => !p.Draft && (names.Length == 0 || names.Any(n => p.Repo.Contains(n, StringComparison.OrdinalIgnoreCase))));
+                return pr is null ? (false, "") : (true, reviews.Count > 1 ? $"{reviews.Count} reviews waiting" : $"{pr.Repo}#{pr.Number}");
+            }
+            case "ci-failed":
+            {
+                var pr = (github.Snapshot()?.MyPrs ?? []).FirstOrDefault(p => p.Ci?.ToUpperInvariant() is "FAILURE" or "ERROR"
+                    && (names.Length == 0 || names.Any(n => p.Repo.Contains(n, StringComparison.OrdinalIgnoreCase))));
+                return pr is null ? (false, "") : (true, $"CI failed: {pr.Repo}#{pr.Number}");
+            }
+            case "battery-low":
+            {
+                var limit = r.Value ?? 20;
+                var b = batteries.Snapshot().FirstOrDefault(d => d.Level <= limit && d.Charging != true
+                    && (names.Length == 0 || names.Any(n => d.Name.Contains(n, StringComparison.OrdinalIgnoreCase))));
+                return b is null ? (false, "") : (true, $"{b.Name} {b.Level}%");
+            }
+            case "ping-high":
+            {
+                var p = ping.Snapshot();
+                var limit = r.Value ?? 150;
+                if (p is null) return (false, "");
+                if (p.Ms is null || p.LossPct >= 50) return (true, $"{p.Host} unreachable");
+                return p.Ms >= limit ? (true, $"{p.Host} {p.Ms:0} ms") : (false, "");
+            }
+            case "always":
+                return (true, "");
+            case "push":
+            {
+                if (match.Length == 0 || !push.Snapshot().TryGetValue(match, out var item)) return (false, "");
+                var d = item.Data;
+                if (!string.IsNullOrEmpty(r.Op) && r.Op != "on") return Compare(d, r.Op, r.Arg) ? (true, Text(d)) : (false, "");
+                var truthy = d.ValueKind switch
+                {
+                    JsonValueKind.True => true,
+                    JsonValueKind.Number => d.GetDouble() != 0,
+                    JsonValueKind.String => d.GetString() is { Length: > 0 } t && t is not ("0" or "false" or "off" or "no"),
+                    JsonValueKind.Object or JsonValueKind.Array => true,
+                    _ => false,
+                };
+                return truthy ? (true, d.ValueKind == JsonValueKind.String ? d.GetString()! : d.ToString()) : (false, "");
+            }
+        }
+        return (false, "");
+    }
+
+    private static string Text(JsonElement d) => d.ValueKind == JsonValueKind.String ? d.GetString()! : d.ToString();
+
+    /// <summary>Compares a pushed value: above / below a number, or equals / differs from a text (case-insensitive).</summary>
+    public static bool Compare(JsonElement d, string op, string? arg)
+    {
+        var text = d.ValueKind == JsonValueKind.Object && d.TryGetProperty("value", out var inner) ? inner : d;
+        double? num = text.ValueKind == JsonValueKind.Number ? text.GetDouble()
+            : text.ValueKind == JsonValueKind.String && double.TryParse(text.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : null;
+        var argNum = double.TryParse(arg, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var a) ? a : (double?)null;
+        var str = text.ValueKind == JsonValueKind.String ? text.GetString() ?? "" : text.ToString();
+        return op switch
+        {
+            ">" => num is not null && argNum is not null && num > argNum,
+            "<" => num is not null && argNum is not null && num < argNum,
+            "=" => num is not null && argNum is not null ? num == argNum : string.Equals(str, arg ?? "", StringComparison.OrdinalIgnoreCase),
+            "!=" => num is not null && argNum is not null ? num != argNum : !string.Equals(str, arg ?? "", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
+    }
+
+    /// <summary>"22:00-07:00" (may wrap past midnight) or a single "08:30" (that minute).</summary>
+    public static bool InWindow(string window, TimeSpan now)
+    {
+        var parts = window.Split('-', StringSplitOptions.TrimEntries);
+        if (!TimeSpan.TryParse(parts[0], out var from)) return false;
+        var to = parts.Length > 1 && TimeSpan.TryParse(parts[1], out var t) ? t : from + TimeSpan.FromMinutes(1);
+        return from <= to ? now >= from && now < to : now >= from || now < to;
+    }
+
+    private HashSet<string> Processes()
+    {
+        if (_procs is not null && Environment.TickCount64 - _procsAt < 3000) return _procs;
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in Process.GetProcesses())
+            using (p) { try { set.Add(p.ProcessName); } catch { } }
+        _procsAt = Environment.TickCount64;
+        return _procs = set;
+    }
+
+    private double IdleSeconds()
+    {
+        if (Environment.TickCount64 - _idleAt < 5000) return _idle;
+        _idleAt = Environment.TickCount64;
+        return _idle = Idle.Seconds();
+    }
+}
