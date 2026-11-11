@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.ComponentName
 import android.content.Intent
 import android.content.IntentFilter
+import android.app.KeyguardManager
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.hardware.Sensor
@@ -67,26 +68,33 @@ class MainActivity : Activity(), SensorEventListener {
     @Volatile private var pluggedIn = true
     private val mainHandler = Handler(Looper.getMainLooper())
     private var powerReceiver: BroadcastReceiver? = null
+    @Volatile private var lastPlugged = true
 
     /** The app may keep the display on whenever it is powered, or when standby is off entirely. */
     private fun refreshKeepAwake() {
         if (!standbyEnabled || pluggedIn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Force ViewRootImpl to push the new window attributes on the next traversal: without a layout request a
+        // static page never relayouts, so WindowManager keeps the stale keep-awake wakelock forever (Android 11+).
+        window.decorView.requestLayout()
     }
 
     private fun registerPowerReceiver() {
+        // ACTION_POWER_CONNECTED/DISCONNECTED are implicit-broadcast-restricted since Android 8 and never reach a
+        // runtime receiver on ANY modern phone. Watch the exempt sticky ACTION_BATTERY_CHANGED instead and treat an
+        // EXTRA_PLUGGED flip as the connect/disconnect edge.
         val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_POWER_CONNECTED)
-            addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(Intent.ACTION_BATTERY_CHANGED)
         }
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                val connected = when (intent?.action) {
-                    Intent.ACTION_POWER_CONNECTED -> true
-                    Intent.ACTION_POWER_DISCONNECTED -> false
-                    else -> return
-                }
-                mainHandler.post { onPowerChanged(connected) }
+                // A charged-to-100% phone drops EXTRA_PLUGGED while EXTRA_STATUS keeps reporting CHARGING/FULL:
+                // treat those states as "cable in" too, otherwise a full panel phone sleeps during normal operation.
+                val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+                    ?: BatteryManager.BATTERY_STATUS_UNKNOWN
+                val plugged = PowerReceiver.edge(intent, "runtime") ?: return
+                android.util.Log.i("PhoneBox", "plug edge via battery-changed: plugged=" + plugged)
+                mainHandler.post { onPowerChanged(plugged) }
             }
         }
         powerReceiver = receiver
@@ -95,12 +103,20 @@ class MainActivity : Activity(), SensorEventListener {
         else
             registerReceiver(receiver, filter)
         // The sticky battery broadcast settles the initial state (a reboot into an unpowered hub should not light up).
-        pluggedIn = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            ?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        run {
+            val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val st = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+                ?: BatteryManager.BATTERY_STATUS_UNKNOWN
+            pluggedIn = (sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
+                st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
+        }
+        PowerReceiver.lastPlugged = pluggedIn
+        android.util.Log.i("PhoneBox", "standby receiver registered, init pluggedIn=" + pluggedIn)
         refreshKeepAwake()
     }
 
     private fun onPowerChanged(connected: Boolean) {
+        android.util.Log.i("PhoneBox", "power changed: connected=" + connected + " standby=" + standbyEnabled + " delayMs=" + standbyDelayMs)
         pluggedIn = connected
         mainHandler.removeCallbacksAndMessages(null)
         if (connected) {
@@ -129,6 +145,13 @@ class MainActivity : Activity(), SensorEventListener {
             ).acquire(3_000L) // the flag lets a plain app wake the screen; no root, no device owner needed
         startActivity(Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        // A swipe keyguard (Lineage default, isSecure=false) would otherwise keep the woken panel behind a lock
+        // screen nobody is there to swipe; requestDismissKeyguard clears it (DISABLE_KEYGUARD is a normal perm).
+        try {
+            (getSystemService(KEYGUARD_SERVICE) as? KeyguardManager)?.requestDismissKeyguard(this, null)
+        } catch (e: Exception) {
+            android.util.Log.w("PhoneBox", "keyguard dismiss failed: " + e)
+        }
     }
 
     private val assetLoader by lazy {
@@ -476,5 +499,32 @@ class MainActivity : Activity(), SensorEventListener {
         private const val PANEL_HEADER = "X-PhoneBox-Panel"
         private val READ_ONLY_IMAGES = setOf("/agent/api/art", "/agent/api/procs/icon")
         private fun FORBIDDEN() = WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", NO_STORE, java.io.ByteArrayInputStream(ByteArray(0)))
+    }
+}
+
+/**
+ * Shared plug-edge detection for both receiver paths (manifest entry + the primary context-registered one; see
+ * AndroidManifest). On Android 8+ only the context-registered receiver actually receives this sticky broadcast,
+ * but the manifest entry documents the feature and revives the component on older OS lines.
+ */
+class PowerReceiver : BroadcastReceiver() {
+    companion object {
+        @Volatile var lastPlugged = true
+
+        /** True/false on a plug edge, null when the state did not change. */
+        fun edge(intent: Intent?, tag: String): Boolean? {
+            val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+                ?: BatteryManager.BATTERY_STATUS_UNKNOWN
+            val plugged = (intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
+                status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+            if (plugged == lastPlugged) return null
+            lastPlugged = plugged
+            android.util.Log.i("PhoneBox", "plug edge ($tag): plugged=" + plugged)
+            return plugged
+        }
+    }
+
+    override fun onReceive(context: Context, intent: Intent) {
+        edge(intent, "static")
     }
 }

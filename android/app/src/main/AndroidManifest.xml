@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -38,5 +39,16 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity-alias>
+        <!-- Belt-and-safety receiver: BATTERY_CHANGED is sticky and is ALSO delivered to the context-registered
+             receiver in MainActivity (the primary path); this manifest entry only adds a documented edge hook and
+             process revival on older OS lines. Primary detection lives in code. -->
+        <receiver
+            android:name=".PowerReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BATTERY_CHANGED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
