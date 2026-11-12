@@ -38,6 +38,50 @@ the pages in a visual editor on the PC: **113 widgets**, **30 templates**, as ma
 [Updates](#updates) · [How it works](#how-it-works) · [Security](#security--privacy) · [FAQ](#faq--troubleshooting) ·
 [Development](#development)
 
+## Fork changes (chflame163: power-standby suite)
+
+Upstream's power standby asks *"is USB power present?"* to decide whether the computer is on.
+That breaks two common desk setups: a PC port whose *charge* is capped at the PMIC
+(`charging_enabled`) while it still powers and syncs the phone, and `ACTION_POWER_CONNECTED` /
+`ACTION_POWER_DISCONNECTED`, which are implicit broadcasts on Android 8+ and never reach
+upstream's receiver at all. This fork's phone app sleeps when the **agent goes quiet** and
+wakes on the **enumeration event** instead.
+
+- **Phone app** (agent and protocol untouched; tags `power-standby-fix` → `power-standby-data`
+  → `power-standby-fast-wake` → `power-standby-deep-sleep`):
+  1. Standby triggers on agent data freshness (page proxy + live-stream beats, measured with
+     `elapsedRealtime` so clock corrections cannot fake it) or the death of the phone's own USB
+     data link, keeping the original grace delay (`display.powerStandbyDelaySec`). Capping the
+     charge no longer puts the panel to sleep.
+  2. An `ACTION_USB_STATE` receiver reacts to the host's kernel enumeration itself: measured
+     enumeration → panel lit in under 1 s (193 ms of it is the display rising from Dozing);
+     the 15 s poll is fallback only.
+  3. Deep standby: 5 min of dark screen with the host still silent pauses the WebView, stops
+     the SSE reconnect loop and `killBackgroundProcesses()`es the Lineage preload list (the
+     @hide `killAllBackgroundProcesses` is not callable from an app; the public per-package
+     call plus one normal permission is). What stays awake are the two sticky receivers and a
+     wakelock-free 60 s probe - measured screen-off drain **27 mA vs 68 mA** before, and
+     deviceidle now actually reaches light idle.
+  4. Battery edges ride `ACTION_BATTERY_CHANGED`, and `STATUS=CHARGING|FULL` counts as
+     plugged even when `EXTRA_PLUGGED` misreads 0 at 100 % on some HALs.
+- **Ops scripts** (deployed as systemd user timers, archived in the repo):
+  `tools/panel-metrics/` pushes custom values with a `level` field (what colors the built-in
+  Pushed value widget; `gpu_power` thresholds at 50/80 % of the live `power.limit`) and keeps
+  the reference panel layout `agent-config-snapshot-*.json` with LAN tokens **redacted**;
+  `tools/power-standby/` holds the host sleep/wake adb hooks - `pb-sleep.sh` deliberately does
+  *not* force-stop the panel app, that would forfeit the enumeration fast-wake - plus build
+  scripts, patch series and TESTLOGs with per-second timelines;
+  `tools/charge-guard/` caps charge at the PMIC with a daily 65-80 band and weekly/quarterly
+  calibration, the state machine verified by `pb_gtest.sh` (24 dry-run assertions).
+- **Secrets**: none in this branch's history. Deployed `~/bin` copies hold real credentials;
+  repo copies use the `PB_STRATA_FALLBACK_KEY` env var or `<REDACTED ...>` placeholders.
+  Release APKs per tag live beside the deployed agent, not in git (md5s in the TESTLOGs).
+- **Tuning notes**: `configured || connected` in the data-link check is intentional - it
+  survives warm reboots and charge caps; the cost is a port that feeds 5 V with the host off
+  keeps the panel lit (drop `|| connected` to trade that for ~1.5 min dark per boot).
+  `WebView` has `onPause()`/`onResume()`, no `resume()`. Compare cross-host timelines by
+  event order, not timestamps - the 3T clock drifts by minutes.
+
 ## New in 0.7.3
 
 Fixes an immediate launch crash on Android 9 and 10. Full-screen mode now uses the compatible immersive API on
