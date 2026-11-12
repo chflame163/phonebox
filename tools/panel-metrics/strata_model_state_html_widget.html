@@ -1,0 +1,164 @@
+<!-- Strata "Model state" — PhoneBox Custom HTML widget (6x2).
+     1:1 移植自 Strata serve/web：index.html 的 .state-card + components.css 的 .st-badge/.st-progress
+     + app.css 的 .badges opacity 规则 + app.js renderMonitor() 的 label/detail/pct 逻辑。
+     卡片外框（背景/边框/圆角）由 PhoneBox 的 .w-html.card 提供，这里只画内容。
+     数据：push key `strata_state`，payload 见 pb_strata_push.py 注释。 -->
+<style>
+:root{
+  /* Strata dark-theme tokens（tokens.css [data-theme=dark] 原值；中性色改成 PhoneBox 卡上的 rgba 等效） */
+  --ms-info:#3aa9ff;      --ms-info-tint:rgba(58,169,255,.12);   --ms-info-text:#7cc4ff;
+  --ms-accent:#34d399;    --ms-accent-tint:rgba(52,211,153,.12); --ms-accent-text:#4ade80;
+  --ms-warn:#f5b53d;      --ms-warn-tint:rgba(245,181,61,.12);   --ms-warn-text:#f8c96a;
+  --ms-danger:#ff5a6e;    --ms-danger-tint:rgba(255,90,110,.12); --ms-danger-text:#ff8a98;
+  --ms-ink:#eef1f3;       --ms-ink-muted:#8e979f;
+  --ms-surface-2:rgba(255,255,255,.07);   /* = --st-surface-2 */
+  --ms-line:rgba(255,255,255,.10);        /* = --st-line    */
+  --ms-line-soft:rgba(255,255,255,.06);   /* = --st-line-soft */
+  --ms-ease:cubic-bezier(.2,.7,.2,1);
+}
+.ms{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:.75em;
+    padding:1.1em 1.4em;box-sizing:border-box;overflow:hidden;
+    color:var(--ms-ink);font-size:15px;font-variant-numeric:tabular-nums;
+    font-synthesis:none;-webkit-font-smoothing:antialiased}
+.ms>*,.ms{min-width:0}
+.ms__head{display:flex;align-items:center;gap:.75em;flex-wrap:wrap;flex:none}
+.ms__title{font-weight:700;font-size:1.2em;line-height:1.15;letter-spacing:.005em;color:var(--ms-ink);white-space:nowrap}
+.ms__badges{display:flex;gap:.5em;flex-wrap:wrap;min-width:0}
+.ms__badge{display:inline-flex;align-items:center;gap:.5em;height:2em;padding:0 .83em;flex:none;
+  border-radius:9999px;font-size:.95em;font-weight:700;line-height:1;white-space:nowrap;
+  background:var(--ms-surface-2);color:var(--ms-ink-muted);border:1px solid var(--ms-line);
+  opacity:.38;transition:opacity 160ms var(--ms-ease)}
+.ms__badge::before{content:"";width:.62em;height:.62em;border-radius:50%;background:currentColor;flex:none}
+.ms__badge[data-s="reading"]{background:var(--ms-info-tint);color:var(--ms-info-text);border-color:transparent}
+.ms__badge[data-s="generating"]{background:var(--ms-accent-tint);color:var(--ms-accent-text);border-color:transparent}
+.ms__badge[data-s="queued"]{background:var(--ms-warn-tint);color:var(--ms-warn-text);border-color:transparent}
+.ms__badge[data-s="error"]{background:var(--ms-danger-tint);color:var(--ms-danger-text);border-color:transparent}
+.ms__badge.on{opacity:1}
+.ms__row{display:flex;justify-content:space-between;align-items:baseline;gap:1em;font-size:1em;font-weight:500;line-height:1.25;flex:none;min-width:0}
+.ms__row .muted{color:var(--ms-ink-muted);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ms__prog{height:.62em;border-radius:9999px;background:var(--ms-surface-2);border:1px solid var(--ms-line-soft);overflow:hidden;flex:none}
+.ms__bar{height:100%;border-radius:inherit;background:var(--ms-accent);transition:width 160ms var(--ms-ease)}
+.ms__prog[data-tone="info"] .ms__bar{background:var(--ms-info)}
+.ms__prog[data-tone="warn"] .ms__bar{background:var(--ms-warn)}
+.ms__prog[data-tone="danger"] .ms__bar{background:var(--ms-danger)}
+</style>
+
+<div class="ms" id="ms">
+  <div class="ms__head" id="ms-head">
+    <span class="ms__title">Model state</span>
+    <span class="ms__badges" id="ms-badges">
+      <span class="ms__badge" data-s="idle">Idle</span>
+      <span class="ms__badge" data-s="unloaded">Unloaded</span>
+      <span class="ms__badge" data-s="reading">Reading</span>
+      <span class="ms__badge" data-s="generating">Generating</span>
+      <span class="ms__badge" data-s="queued">Queued</span>
+      <span class="ms__badge" data-s="error">Error</span>
+    </span>
+  </div>
+  <div class="ms__row"><span id="ms-label">Waiting for a request</span><span class="muted" id="ms-detail">–</span></div>
+  <div class="ms__prog" id="ms-prog"><div class="ms__bar" id="ms-bar" style="width:0%"></div></div>
+</div>
+
+<script>
+(function () {
+  var KEY = "strata_state";
+  var root = document.getElementById("ms"),
+      head = document.getElementById("ms-head"),
+      badges = document.getElementById("ms-badges"),
+      labelEl = document.getElementById("ms-label"),
+      detailEl = document.getElementById("ms-detail"),
+      progEl = document.getElementById("ms-prog"),
+      barEl = document.getElementById("ms-bar");
+
+  // app.js 第 9 行的 fmt：空值显示 en dash，数字千分位
+  function fmt(n, d) {
+    d = d || 0;
+    if (n === null || n === undefined || n === "" || Number.isNaN(+n)) return "–";
+    return Number(n).toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
+  }
+
+  var lastData = null;
+
+  function render(item) {
+    var d = item && typeof item === "object" && "data" in item ? item.data : item;
+    if (d && typeof d === "object") lastData = d;
+    if (!d || typeof d !== "object") {          // 没有数据（ttl 过期 / 引擎没起）：全淡、Idle 不亮
+      paint(null, null, "", 0, null);
+      return;
+    }
+    var state = d.state || d.raw_state || null;
+    var lit = +d.queued > 0 ? "queued" : state;      // app.js: on = queued>0 ? "queued" : live.state
+    // app.js: lit = (b.dataset.s === on || b.dataset.s === live.state)
+    Array.prototype.forEach.call(badges.children, function (b) {
+      var s = b.getAttribute("data-s");
+      b.classList.toggle("on", s === lit || s === state);
+    });
+
+    var label = "Waiting for a request", detail = "", pct = 0, tone = null;   // renderMonitor() 的分支
+    if (state === "reading") {
+      label = "Reading prompt"; tone = "info";
+      if (+d.prompt_total) {
+        pct = (100 * +d.prompt_read) / +d.prompt_total;
+        detail = fmt(d.prompt_read) + " / " + fmt(d.prompt_total) + " tokens · " + fmt(pct) + "%";
+      } else {
+        detail = fmt(d.prompt_tokens) + " tokens";
+      }
+    } else if (state === "generating") {
+      label = d.phase ? String(d.phase).charAt(0).toUpperCase() + String(d.phase).slice(1) : "Generating";
+      pct = +d.max_tokens ? Math.min(100, (100 * +d.generated) / +d.max_tokens) : 0;
+      detail = fmt(d.generated) + " tokens · " + fmt(d.tok_s, 1) + " tok/s";
+    } else if (state === "unloaded") {
+      label = "Unloaded"; detail = "Load brings it back. A message does too.";
+    } else if (d.last_detail) {
+      detail = String(d.last_detail);            // idle：引擎的 "last: N tokens at X tok/s"
+    }
+    paint(state, label, detail, pct, tone);
+  }
+
+  function paint(state, label, detail, pct, tone) {
+    labelEl.textContent = label || "Waiting for a request";
+    detailEl.textContent = detail || "–";
+    if (tone) progEl.setAttribute("data-tone", tone); else progEl.removeAttribute("data-tone");
+    var p = +pct; if (!isFinite(p) || p < 0) p = 0; if (p > 100) p = 100;
+    barEl.style.width = p + "%";
+    fit();
+  }
+
+  // 6x2 的卡很小，字号自适应：先从大到小找能一行放下 6 个徽章的字号；放不下就退而求其次，
+  // 用“换行但不溢出”的最大字号（可读性优先）；还不够就压间距再来一遍。
+  var hi = 17, lo = 7, cache = "";
+  function ok(f, tight) {
+    root.style.fontSize = f + "px";
+    root.style.gap = tight ? "0.45em" : "";
+    return root.scrollHeight <= root.clientHeight + 1;
+  }
+  function singleLine() {
+    var b = badges.firstElementChild ? badges.firstElementChild.getBoundingClientRect().height : 0;
+    return head.getBoundingClientRect().height <= b * 1.6 + 1;
+  }
+  function fit() {
+    var key = root.clientWidth + "x" + root.clientHeight;
+    if (key === cache && root.scrollHeight <= root.clientHeight + 1) { return; }   // 卡片尺寸没变就不重排
+    cache = key;
+    var f, FS_MIN_SINGLE = 11;   // 只有单行还能保持 11px 以上才追求原图那种一行排版
+    for (f = hi; f >= Math.max(lo, FS_MIN_SINGLE); f -= 0.5) { if (ok(f, false) && singleLine()) { root.dataset.fs = f; return; } }
+    for (var tight = 0; tight < 2; tight++) {
+      for (f = hi; f >= lo; f -= 0.5) { if (ok(f, tight === 1)) { root.dataset.fs = f; return; } }
+    }
+    ok(lo, true); root.dataset.fs = lo;
+  }
+
+  root.__msRender = render;                              // 离线验证钩子（宿主可直接喂一条 push 数据）
+
+  if (window.phonebox && window.phonebox.on) {           // 真机：PhoneBox 沙箱
+    window.phonebox.on("push", function (items) { render(items && items[KEY]); });
+  } else {                                               // 预览/自测：模拟宿主 postMessage
+    window.addEventListener("message", function (e) {
+      var m = e.data;
+      if (m && m.phonebox === "data" && m.kind === "push") render(m.value && m.value[KEY]);
+    });
+  }
+  window.addEventListener("resize", fit);
+  fit();
+})();
+</script>
