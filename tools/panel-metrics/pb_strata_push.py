@@ -25,9 +25,9 @@ AGENT = "http://127.0.0.1:8765"
 FALLBACK_KEY = os.environ.get("PB_STRATA_FALLBACK_KEY", "REPLACE-WITH-STRATA-API-KEY")
 FALLBACK_PORT = "8080"
 # vram_pct 的着色按“还剩多少显存”(MiB) 而不是占用百分比：这台引擎常驻就把 24G 吃到 ~96%
-# （实测 23,664/24,576 MiB，free 912），按百分比阈值会常年红色、失去告警意义。
-# 地板参照 --vram-reserve-mib 768 → 引擎自留 ~523 MiB，所以 700/400 才是真吃紧的信号。
-VR_WARN_FREE, VR_ERR_FREE = 700, 400
+# （实测 23,664/24,576 MiB，free 只有 912）。阈值按用户 11-12 15:5x 指定 = 2000 / 500：
+# 余量不到 2G 就橙（所以常态 912 本来就是橙色），掉进 500 MiB 以内才算真危险(红)。
+VR_WARN_FREE, VR_ERR_FREE = 2000, 500
 
 
 def discover():
