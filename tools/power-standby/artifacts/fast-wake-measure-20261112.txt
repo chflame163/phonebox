@@ -1,0 +1,65 @@
+=== 主机与手机的时钟偏差 ===
+  skew(phone-host) ≈ +0.49s (分辨率±0.5s)
+=== 主机侧：拔线/插回的内核时刻 ===
+2026-11-12T12:53:17+08:00 cc-Ubuntu-3090 kernel: usb 1-12: USB disconnect, device number 8
+2026-11-12T12:54:20+08:00 cc-Ubuntu-3090 kernel: usb 1-12: new high-speed USB device number 9 using xhci_hcd
+2026-11-12T12:54:20+08:00 cc-Ubuntu-3090 kernel: usb 1-12: New USB device found, idVendor=18d1, idProduct=4ee7, bcdDevice= 3.18
+2026-11-12T12:54:20+08:00 cc-Ubuntu-3090 kernel: usb 1-12: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+2026-11-12T12:54:20+08:00 cc-Ubuntu-3090 kernel: usb 1-12: Product: Android
+2026-11-12T12:54:20+08:00 cc-Ubuntu-3090 kernel: usb 1-12: Manufacturer: Android
+2026-11-12T12:54:20+08:00 cc-Ubuntu-3090 kernel: usb 1-12: SerialNumber: 481fe5dc
+
+=== 手机侧全过程（同一时钟，可自算延迟） ===
+11-12 12:25:08.383  1154  1214 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=net.oxog.phonebox.deskpanel/.MainActivity} from uid 0
+11-12 12:35:17.244  1154  2862 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=net.oxog.phonebox.deskpanel/.MainActivity} from uid 0
+11-12 12:35:17.665 10232 10232 I PhoneBox: standby receiver registered, init pluggedIn=true
+11-12 12:35:37.124  1154  2045 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=net.oxog.phonebox.deskpanel/.MainActivity} from uid 0
+11-12 12:36:32.810  1154  2045 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=net.oxog.phonebox.deskpanel/.MainActivity} from uid 0
+11-12 12:37:48.586  1154  1657 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=net.oxog.phonebox.deskpanel/.MainActivity} from uid 0
+11-12 12:37:48.988 10542 10542 I PhoneBox: standby receiver registered, init pluggedIn=true
+11-12 12:37:49.198  1154  1339 I ActivityTaskManager: Displayed net.oxog.phonebox.deskpanel/.MainActivity: +590ms
+11-12 12:39:26.731  1154  6107 I ActivityTaskManager: START u0 {flg=0x10000000 cmp=net.oxog.phonebox.deskpanel/.MainActivity} from uid 0
+11-12 12:53:18.458 10542 10542 I PhoneBox: plug edge (runtime): plugged=false
+11-12 12:53:18.458 10542 10542 I PhoneBox: plug edge via battery-changed: plugged=false
+11-12 12:53:18.459 10542 10542 I PhoneBox: power changed: connected=false standby=true delayMs=5000 (standby watches agent data)
+11-12 12:53:19.404 10542 10542 I PhoneBox: USB data link -> false (reconciling now)
+11-12 12:53:25.424 10542 10542 I PhoneBox: standby: agent silent 703s, no USB link -> releasing the screen
+11-12 12:53:35.455  1154  1410 I PowerManagerService: Going to sleep due to timeout (uid 1000)...
+11-12 12:53:36.339  1154  1410 I PowerManagerService: Dozing...
+11-12 12:54:21.449 10542 10542 I PhoneBox: USB data link -> true (reconciling now)
+11-12 12:54:21.460 10542 10542 I PhoneBox: standby: the computer answers again (silent for 759s) -> waking
+11-12 12:54:21.478  1154  2045 I PowerManagerService: Waking up from Dozing (uid=10154, reason=WAKE_REASON_APPLICATION, details=PhoneBox:powerStandby)...
+11-12 12:54:21.535  1154  2045 I ActivityTaskManager: START u0 {flg=0x20020000 cmp=net.oxog.phonebox.deskpanel/.MainActivity} from uid 10154
+11-12 12:54:21.602 10542 10542 I PhoneBox: plug edge (runtime): plugged=true
+11-12 12:54:21.602 10542 10542 I PhoneBox: plug edge via battery-changed: plugged=true
+11-12 12:54:21.606 10542 10542 I PhoneBox: power changed: connected=true standby=true delayMs=5000 (standby watches agent data)
+11-12 12:54:21.687  1154  1410 W PowerManagerService: Screen on took 210 ms
+
+=== 手机 events：屏幕开合的精确时刻 ===
+11-12 12:20:21.000  1154  2407 I battery_status: [5,2,1,2,Li-ion]
+11-12 12:20:24.316  1154  2407 I battery_status: [5,2,1,0,Li-ion]
+11-12 12:22:44.912  1154  1154 I power_screen_state: [0,2,0,0,919]
+11-12 12:23:29.729  1154  2407 I battery_status: [3,2,1,0,Li-ion]
+11-12 12:24:15.961  1154  2407 I battery_status: [3,2,1,2,Li-ion]
+11-12 12:24:49.244  1154  1154 I power_screen_state: [1,0,0,0,215]
+11-12 12:53:18.447  1154  2407 I battery_status: [3,2,1,0,Li-ion]
+11-12 12:53:36.579  1154  1154 I power_screen_state: [0,3,0,0,1123]
+11-12 12:54:21.550  1154  2407 I battery_status: [3,2,1,2,Li-ion]
+11-12 12:54:21.688  1154  1154 I power_screen_state: [1,0,0,0,210]
+
+=== 当前状态 ===
+    mWakefulness=Awake
+  电量=88
+  stay_on=7
+=== 恢复：起 agent 与 chargeguard timer ===
+  active: active
+  active: active
+[{"id":"4429c9254086","model":"OnePlus ONEPLUS A3010","lastSeen":1794459293713,"via":"USB","name":null,"pages":null}]
+UsbFfs tcp:8765 tcp:8765
+
+2026-11-12T12:54:49+08:00 cc-Ubuntu-3090 PhoneBoxAgent[43806]: 12:54:49 info: PhoneBox.Agent.AdbReverse[0] 481fe5dc: PhoneBox is now the home app
+2026-11-12T12:54:49+08:00 cc-Ubuntu-3090 PhoneBoxAgent[43806]: 12:54:49 info: Program[0] live stream opened (phone, USB/local)
+2026-11-12T12:54:49+08:00 cc-Ubuntu-3090 PhoneBoxAgent[43806]: 12:54:49 info: PhoneBox.Agent.AdbReverse[0] 481fe5dc: screen saver off, stays awake while plugged in
+2026-11-12T12:54:49+08:00 cc-Ubuntu-3090 PhoneBoxAgent[43806]: 12:54:49 info: PhoneBox.Agent.AdbReverse[0] phone connected: 481fe5dc
+  guard: level=88 charging_enabled=0 usb_online=1 status=充电中 thresholds: stop=80 restart=65 floor=25
+=== MEAS DONE ===

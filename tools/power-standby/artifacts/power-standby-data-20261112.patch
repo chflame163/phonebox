@@ -1,0 +1,260 @@
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+index b023109..0f7ff57 100755
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -17,7 +17,7 @@ android {
+         applicationId = "net.oxog.phonebox.deskpanel"
+         minSdk = 28
+         targetSdk = 35
+-        versionCode = 24
++        versionCode = 25
+         versionName = "0.9.3"
+     }
+ 
+diff --git a/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt b/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
+index e179a86..f787031 100755
+--- a/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
++++ b/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
+@@ -42,6 +42,7 @@ import androidx.webkit.WebViewAssetLoader
+ import androidx.webkit.WebViewCompat
+ import androidx.webkit.WebViewFeature
+ import org.json.JSONObject
++import java.util.concurrent.Executors
+ 
+ /**
+  * Full-screen desk panel. The UI is plain HTML/JS bundled in assets/www.
+@@ -60,19 +61,27 @@ class MainActivity : Activity(), SensorEventListener {
+     private var lastLuxAt = 0L
+     private var near: Boolean? = null
+ 
+-    // Power standby: a panel fed from a server should sleep its screen when the server powers off (USB power cut) and
+-    // light it again when power returns. The system's own screen-off timeout does the actual sleeping; this code only
+-    // decides whether the app may hold the screen on. No root: a normal app cannot force the display off itself.
++    // Power standby: a panel fed from a server should sleep its screen when the server powers off and light it again
++    // once the server is back. "Does the cable carry power" is the wrong question: ChargeGuard stops charging by
++    // switching off the very port that feeds the phone (while the computer keeps running), and a hub reset or a driver
++    // crash can drop the USB link while Wi-Fi still carries data. Standby therefore follows DATA REACHABILITY — the
++    // agent answering over either transport — with the phone's own USB data link as a second opinion, and the power
++    // state only decides when it is worth probing. The system's own screen-off timeout does the actual sleeping; this
++    // code only decides whether the app may hold the screen on. No root: a normal app cannot force the display off.
+     @Volatile private var standbyEnabled = true
+     @Volatile private var standbyDelayMs = 30_000L
+-    @Volatile private var pluggedIn = true
++    @Volatile private var pluggedIn = true        // power state: used to time probes, not to decide standby
++    @Volatile private var agentDataAt = 0L        // elapsedRealtime of the last answer from the agent, either route
++    @Volatile private var usbLinkUp = false       // the phone sees an enumerated USB data link => that computer is up
++    @Volatile private var hostAlive = true        // what standby acts on; reconciled by healthTick
++    @Volatile private var hostLostSince = 0L      // elapsedRealtime of the first failing poll; 0 while alive
+     private val mainHandler = Handler(Looper.getMainLooper())
++    private val probes = Executors.newSingleThreadExecutor()
+     private var powerReceiver: BroadcastReceiver? = null
+-    @Volatile private var lastPlugged = true
+ 
+-    /** The app may keep the display on whenever it is powered, or when standby is off entirely. */
++    /** The app may keep the display on whenever it believes the computer is running, or when standby is off entirely. */
+     private fun refreshKeepAwake() {
+-        if (!standbyEnabled || pluggedIn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
++        if (!standbyEnabled || hostAlive) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+         // Force ViewRootImpl to push the new window attributes on the next traversal: without a layout request a
+         // static page never relayouts, so WindowManager keeps the stale keep-awake wakelock forever (Android 11+).
+@@ -115,22 +124,88 @@ class MainActivity : Activity(), SensorEventListener {
+         refreshKeepAwake()
+     }
+ 
++    /**
++     * A power edge no longer decides standby (ChargeGuard cuts the power of a running computer), but plugging in is
++     * still the moment worth waking for: the phone's own USB link going up proves that computer booted, and charging
++     * grants only a brief window of CPU time — use it to reach the agent right away, and let the panel light up on
++     * the answer rather than on the electricity. A reboot's power blip is absorbed by the grace period in
++     * reconcileStandby(), which now watches data instead of the cable.
++     */
+     private fun onPowerChanged(connected: Boolean) {
+-        android.util.Log.i("PhoneBox", "power changed: connected=" + connected + " standby=" + standbyEnabled + " delayMs=" + standbyDelayMs)
++        android.util.Log.i("PhoneBox", "power changed: connected=$connected standby=$standbyEnabled delayMs=$standbyDelayMs (standby watches agent data)")
+         pluggedIn = connected
+-        mainHandler.removeCallbacksAndMessages(null)
+-        if (connected) {
+-            // Power is back: keep the screen on again and bring the panel forward, even without the agent's adb wake.
+-            refreshKeepAwake()
+-            wakeAndShowPanel()
+-        } else if (standbyEnabled) {
+-            // De-bounce: a rebooting server drops USB for a moment; a transient loss should not blank the panel.
+-            mainHandler.postDelayed({
+-                if (!pluggedIn && standbyEnabled)
+-                    refreshKeepAwake() // releases the hold; the screen now sleeps at the system timeout
+-            }, standbyDelayMs)
+-        } else {
+-            refreshKeepAwake()
++        mainHandler.removeCallbacks(healthTick)
++        mainHandler.post(healthTick)
++        if (connected) probeAgent()
++    }
++
++    /** The phone's own view of its USB data link: an enumerated (configured) link means that computer is running,
++     *  which is worth knowing even when Wi-Fi is down. Sticky, so reading it costs one binder call. */
++    private fun readUsbLink(): Boolean = try {
++        val u = registerReceiver(null, IntentFilter("android.hardware.usb.action.USB_STATE"))
++        u != null && (u.getBooleanExtra("configured", false) || u.getBooleanExtra("connected", false))
++    } catch (e: Exception) {
++        false
++    }
++
++    /** Watch the reachability of the computer: quickly while it answers, slowly (and with a short CPU wake, so doze
++     *  lets the request land) after the panel has slept. */
++    private val healthTick = object : Runnable {
++        override fun run() {
++            usbLinkUp = readUsbLink()
++            reconcileStandby()
++            if (!hostAlive) probeAgent()
++            mainHandler.postDelayed(this, if (hostAlive) HEALTH_POLL_MS else STANDBY_POLL_MS)
++        }
++    }
++
++    /**
++     * The standby decision: no answer from the agent for AGENT_SILENCE_MS and no USB data link means the computer is
++     * off or unreachable, so the panel stops holding the screen and Android's timeout sleeps it — whether or not the
++     * cable still carries power. Coming back online lights the panel again on its own, no touch needed.
++     */
++    private fun reconcileStandby() {
++        val silentFor = SystemClock.elapsedRealtime() - agentDataAt
++        if (!standbyEnabled || silentFor < AGENT_SILENCE_MS || usbLinkUp) {
++            hostLostSince = 0L
++            if (!hostAlive) {
++                hostAlive = true
++                android.util.Log.i("PhoneBox", "standby: the computer answers again (silent for ${silentFor / 1000}s) -> waking")
++                refreshKeepAwake()
++                wakeAndShowPanel()
++            }
++            return
++        }
++        if (hostLostSince == 0L) {
++            hostLostSince = SystemClock.elapsedRealtime()
++            return
++        }
++        if (hostAlive && SystemClock.elapsedRealtime() - hostLostSince >= standbyDelayMs) {
++            hostAlive = false
++            android.util.Log.i("PhoneBox", "standby: agent silent ${silentFor / 1000}s, no USB link -> releasing the screen")
++            refreshKeepAwake() // releases the hold; the screen now sleeps at the system timeout
++        }
++    }
++
++    /** Ask the agent directly, off the UI thread: the panel's own polls stop while the WebView idles, and a phone
++     *  that has slept must still notice the computer coming back. A held CPU lock keeps the request from being
++     *  frozen midway; a reply reopens the panel through healthTick. */
++    private fun probeAgent() {
++        probes.execute {
++            val held = try {
++                getSystemService(PowerManager::class.java)
++                    ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhoneBox:probe")?.apply { acquire(6_000L) }
++            } catch (e: Exception) {
++                null
++            }
++            try {
++                val r = link.request("GET", "/api/state")
++                runCatching { r.body.use { it.readBytes() } }
++                if (r.code < 400) agentDataAt = SystemClock.elapsedRealtime()
++            } catch (e: Exception) {
++            } finally {
++                runCatching { held?.release() }
++            }
+         }
+     }
+ 
+@@ -166,6 +241,8 @@ class MainActivity : Activity(), SensorEventListener {
+         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // standby may release it again below
+         link = AgentLink(this)
+         stream = AgentStream(link) { event, data ->
++            // "close" is the stream's own goodbye, not an answer from the agent; everything else is proof of life.
++            if (event != "close") agentDataAt = SystemClock.elapsedRealtime()
+             val js = "window.onAgentStream && window.onAgentStream(${JSONObject.quote(event)}, ${JSONObject.quote(data)})"
+             runOnUiThread { web.evaluateJavascript(js, null) }
+         }
+@@ -215,6 +292,12 @@ class MainActivity : Activity(), SensorEventListener {
+         web.loadUrl("https://$ASSET_HOST/assets/www/index.html")
+         hideSystemUi()
+         registerPowerReceiver()
++        // Start from "the computer is there" and let the polls correct it: the first request needs a moment, while the
++        // USB data link is known at once, so a phone booting into an unpowered hub still goes dark shortly after.
++        agentDataAt = SystemClock.elapsedRealtime()
++        usbLinkUp = readUsbLink()
++        hostAlive = true
++        mainHandler.postDelayed(healthTick, HEALTH_POLL_MS)
+     }
+ 
+     /**
+@@ -231,6 +314,8 @@ class MainActivity : Activity(), SensorEventListener {
+         val path = req.url.encodedPath!!.removePrefix("/agent")
+         val query = req.url.encodedQuery?.let { "?$it" } ?: ""
+         val r = link.request(req.method, path + query)
++        // Whatever the panel gets back, the computer behind it is running — whichever transport carried it.
++        if (r.code < 400) agentDataAt = SystemClock.elapsedRealtime()
+         val ct = r.contentType ?: "application/octet-stream"
+         val mime = ct.substringBefore(';').trim()
+         val charset = if (ct.contains("charset=")) ct.substringAfter("charset=").trim() else null
+@@ -278,9 +363,11 @@ class MainActivity : Activity(), SensorEventListener {
+ 
+     override fun onResume() {
+         super.onResume()
+-        refreshKeepAwake() // a wake-up while unplugged (touch, home button) must not silently re-arm the hold
++        refreshKeepAwake() // a wake-up with no computer behind it (touch, home button) must not silently re-arm the hold
+         web.onResume()
+         stream.start()
++        mainHandler.removeCallbacks(healthTick)
++        mainHandler.post(healthTick) // look at reachability right now, then back to the usual rhythm
+         hideSystemUi()
+         sensors?.getDefaultSensor(Sensor.TYPE_LIGHT)?.let { sensors?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+         sensors?.getDefaultSensor(Sensor.TYPE_PROXIMITY)?.let { sensors?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+@@ -295,6 +382,7 @@ class MainActivity : Activity(), SensorEventListener {
+ 
+     override fun onDestroy() {
+         mainHandler.removeCallbacksAndMessages(null)
++        probes.shutdownNow()
+         powerReceiver?.let { runCatching { unregisterReceiver(it) } }
+         powerReceiver = null
+         super.onDestroy()
+@@ -414,9 +502,10 @@ class MainActivity : Activity(), SensorEventListener {
+         fun setVolumeKeys(key: String, enabled: Boolean) { if (ok(key)) volumeKeysFlipPages = enabled }
+ 
+         /**
+-         * Power standby (on by default): when the phone's USB power is cut — the server powered off — the panel stops
+-         * holding the screen on so it sleeps at the system timeout, and wakes itself when power returns. `delaySec` is
+-         * the grace period that absorbs a reboot's brief power blip.
++         * Power standby (on by default): when no computer answers — it powered off, or the hub port that feeds the
++         * phone was switched off by ChargeGuard while it kept running — the panel stops holding the screen on, so the
++         * screen sleeps at the system timeout, and it wakes itself as soon as the agent answers again. `delaySec` is
++         * the grace period that absorbs a reboot's brief power blip and a momentary loss of Wi-Fi.
+          */
+         @JavascriptInterface
+         fun setPowerStandby(key: String, enabled: Boolean, delaySec: Int) {
+@@ -424,11 +513,8 @@ class MainActivity : Activity(), SensorEventListener {
+             standbyEnabled = enabled
+             standbyDelayMs = delaySec.coerceIn(3, 600) * 1_000L
+             // A settings change must take effect at once, either way, even while unpowered.
+-            mainHandler.removeCallbacksAndMessages(null)
+-            runOnUiThread {
+-                if (pluggedIn || !standbyEnabled) refreshKeepAwake()
+-                else mainHandler.postDelayed({ if (!pluggedIn && standbyEnabled) refreshKeepAwake() }, standbyDelayMs)
+-            }
++            mainHandler.removeCallbacks(healthTick)
++            mainHandler.post(healthTick)
+         }
+ 
+         /** Which sensors the phone has: {"light": true, "proximity": true}. */
+@@ -494,6 +580,16 @@ class MainActivity : Activity(), SensorEventListener {
+     }
+ 
+     companion object {
++        // The agent pushes "state" every second and AgentStream abandons a silent connection after 8s, so this much
++        // quiet means the computer is gone rather than briefly busy. Measured with SystemClock.elapsedRealtime, because
++        // a phone that has not kept time yet can jump its wall clock by hours.
++        private const val AGENT_SILENCE_MS = 12_000L
++        private const val HEALTH_POLL_MS = 2_000L
++        // After the panel has slept the phone is on battery and dozing: check the computer this often, each check
++        // holding the CPU a few seconds. Long enough to spare the battery for a night without the server, short enough
++        // to bring the panel back on its own.
++        private const val STANDBY_POLL_MS = 30_000L
++
+         private const val ASSET_HOST = "appassets.androidplatform.net"
+         private val NO_STORE = mapOf("Cache-Control" to "no-store")
+         private const val PANEL_HEADER = "X-PhoneBox-Panel"

@@ -1,0 +1,113 @@
+PhoneBox vc27 深睡省电 —— 实测记录（2026-11-12）
+commit 606fc08 "standby: quiet down to a bare watcher 5 min after the screen sleeps"
+tag power-standby-deep-sleep | APK md5 0c6dc63381086d607a47a6e8d40fdaec（versionCode 27）
+
+== 窗口定义 ==
+武装起点: 13:14:41（手机 epoch 1794460481），level 84%，charge_counter=2558702，
+          此前已做 dumpsys batterystats --reset 与 logcat -c
+拔线:     13:17:56 主机内核 USB disconnect（device 9）
+插回:     13:33:43 主机内核重新枚举（device 10, idVendor=18d1 idProduct=4ee7）
+          窗口 = 15 m 47 s
+agent 被我方手动 stop（面板期间显示 "PC not connected" 属预期），13:38 --restore 起回 active、via=USB。
+
+== 判读结论（§2 五项待验全过/有明确定性） ==
+1. 深睡触发 ✓
+   13:26:17.342 PhoneBox: deep standby: panel polling stopped, background
+   processes trimmed (11 pkgs)。距熄屏(13:18:14.9) 8m03s，比标称 300s 晚约 3 分钟——
+   doze 把不握锁的 alarm tick 推迟了，方向保守，可接受。
+2. deviceidle 真的进过 ✓（判据修正见下）
+   batterystats --history: "+6m34s device_idle=light"（13:21:15 进 light idle）；
+   "+11m34s device_idle=off"（13:26:15 被 TIME_TICK alarm 唤醒→深睡动作），
+   "+11m39s -running -wake_lock device_idle=light"（13:26:20 再进 light，此后 7 分钟
+   无 running 无 wake_lock，直到 13:33:43 "+19m02s device_idle=off active=charging"）。
+   full IDLE 未进：Lineage 默认熄屏约 30 分钟才进深 doze，本窗口黑屏只有 15.5 分钟，符合预期。
+   ※ 注意：batterystats 的 "Time on battery screen doze / Screen doze discharge"
+     是 AOD（屏幕 doze）统计，本机熄屏=完全关屏，该项恒 0，不能当 deviceidle 判据。
+     上一份交接文档 §2 的判据写法有误，以本记录为准。
+3. 放电速率 ✓
+   Screen off discharge 7.00 mAh / 15m28s ≈ 27 mA（改前基线 68 mA，**-60%**）。
+   Discharge 7.00 mAh / Time on battery 15m46s ≈ 26.6 mA。
+   level 84→75% 的跌法偏快是 gauge 电压估算在负载下的行为，以电量计 7 mAh 为准。
+4. 插回事件唤醒 ≤1s ✓
+   内核枚举 13:33:43 vs 手机 13:33:43.559 "USB data link -> true"（手机时钟 +0.49s 偏移
+   ⇒ 换算后基本同秒）→ .567 "deep standby over: stream and polling resumed"
+   → .568 "the computer answers again" → .571 PowerManagerService Waking up from Dozing
+   (WAKE_REASON_APPLICATION, PhoneBox:powerStandby) → 13:33:43.772 屏亮，Screen on took 193ms。
+   深睡期间保留的 USB_STATE/BATTERY_CHANGED 接收器是唤醒主路径（probe 兜底被 doze 推迟）。
+5. 充电三层 ✓ 行为正常
+   chargeguard 拔线期间每轮 "no adb device -> 不做处理"（无害）；插回后
+   level=75 charging_enabled=0 usb_online=1 status=Discharging，phase=daily。
+   本窗口只到 75%，未触发 65% 复充——**"65% 复充能否爬回 80" 仍是最大未知数**，
+   留给日常心跳日志观察（/mnt/nvme0n1p1/temp/pb_chargeguard.log）。
+
+== 关机钩子复验（上一轮已测，本轮无回归） ==
+start 后 agent active、reverse 在（UsbFfs tcp:8765）、stay_on=7 已恢复、mWakefulness=Awake、面板恢复。
+
+== 原始 dump A：pb_deepcheck.sh --restore（13:38）==
+=== 起点（本轮武装时记下）: level 84%，手机 epoch 1794460481 = 2026-11-12T13:14:41 ===
+=== 1. 手机侧关键日志（深睡进入/退出、熄屏与亮屏、事件唤醒） ===
+11-12 13:17:57.153 11635 11635 I PhoneBox: plug edge (runtime): plugged=false
+11-12 13:17:57.153 11635 11635 I PhoneBox: plug edge via battery-changed: plugged=false
+11-12 13:17:57.154 11635 11635 I PhoneBox: power changed: connected=false standby=true delayMs=5000 (standby watches agent data)
+11-12 13:17:58.071 11635 11635 I PhoneBox: USB data link -> false (reconciling now)
+11-12 13:18:04.088 11635 11635 I PhoneBox: standby: agent silent 173s, no USB link -> releasing the screen
+11-12 13:18:14.124  1154  1410 I PowerManagerService: Going to sleep due to timeout (uid 1000)...
+11-12 13:18:14.974  1154  1410 I PowerManagerService: Dozing...
+11-12 13:26:17.342 11635 11635 I PhoneBox: deep standby: panel polling stopped, background processes trimmed (11 pkgs)
+11-12 13:33:43.559 11635 11635 I PhoneBox: USB data link -> true (reconciling now)
+11-12 13:33:43.567 11635 11635 I PhoneBox: deep standby over: stream and polling resumed
+11-12 13:33:43.568 11635 11635 I PhoneBox: standby: the computer answers again (silent for 1112s) -> waking
+11-12 13:33:43.571  1154  7532 I PowerManagerService: Waking up from Dozing (uid=10154, reason=WAKE_REASON_APPLICATION, details=PhoneBox:powerStandby)...
+11-12 13:33:43.737 11635 11635 I PhoneBox: plug edge (runtime): plugged=true
+11-12 13:33:43.738 11635 11635 I PhoneBox: plug edge via battery-changed: plugged=true
+11-12 13:33:43.738 11635 11635 I PhoneBox: power changed: connected=true standby=true delayMs=5000 (standby watches agent data)
+
+=== 2. doze 有没有真的进去 ===
+  mScreenOn=true
+  mState=ACTIVE mLightState=ACTIVE         (插回亮屏后的现态；窗口内状态见 dump B history)
+
+=== 3. 屏幕开合与放电统计 ===
+11-12 13:13:37.253  1154  1154 I power_screen_state: [0,2,0,0,938]
+11-12 13:14:02.830  1154  1154 I power_screen_state: [1,0,0,0,200]
+11-12 13:17:57.135  1154  2407 I battery_status: [3,2,1,0,Li-ion]
+11-12 13:18:15.178  1154  1154 I power_screen_state: [0,3,0,0,1054]
+11-12 13:33:43.734  1154  2407 I battery_status: [3,2,1,2,Li-ion]
+11-12 13:33:43.772  1154  1154 I power_screen_state: [1,0,0,0,193]
+  Estimated screen off time: 4h 8m 57s 900ms
+  System starts: 0, currently on battery: false
+  Time on battery: 15m 46s 623ms (74.2%) realtime, 53s 695ms (5.7%) uptime
+  Time on battery screen off: 15m 28s 931ms (98.1%) realtime, 36s 3ms (3.8%) uptime
+  Time on battery screen doze: 0ms (0.0%)
+  Discharge: 7.00 mAh
+  Screen off discharge: 7.00 mAh
+  Screen doze discharge: 0 mAh
+    Amount discharged while screen off: 6
+    Amount discharged while screen doze: 0
+  现在电量=75
+  charge_counter=2535574
+
+=== 4. 插回时刻对表（主机内核） ===
+2026-11-12T13:17:56+08:00 kernel: usb 1-12: USB disconnect, device number 9
+2026-11-12T13:33:43+08:00 kernel: usb 1-12: new high-speed USB device number 10 using xhci_hcd
+2026-11-12T13:33:43+08:00 kernel: usb 1-12: SerialNumber: 481fe5dc
+
+=== 5. 充电守护 ===
+level=75 charging_enabled=0 usb_online=1 status=Discharging
+phase=daily (日常)  距上次周校验 0/7d，距上次季校验 0/90d
+阈值: 日常 65~80 (下限 25 强制复充, 8 无条件复充) | 周 40~80 | 季 20~100+顶充30min
+(拔线期间每轮 "no adb device 481fe5dc -> 不做处理" ×6)
+
+=== 6. 起回 agent ===
+active active
+[{"id":"4429c9254086","model":"OnePlus ONEPLUS A3010","lastSeen":1794461764564,"via":"USB",...}]
+UsbFfs tcp:8765 tcp:8765
+  stay_on=7
+  屏幕:   mWakefulness=Awake
+
+== 原始 dump B：deviceidle 历史补证（13:39）==
+batterystats --history（reset 起算相对时间）:
+  +6m34s185ms (3) 083 charge=2546 +running +wake_lock=1000:"*alarm*:TIME_TICK" -wifi_radio device_idle=light
+                  wake_reason="76:qcom,smd-rpm:188:681b8.qcom,mpm"
+  +11m34s525ms (3) 081 +running +wake_lock=1000:"*alarm*:TIME_TICK" -wifi_radio device_idle=off
+  +11m39s750ms (1) 081 -running -wake_lock device_idle=light
+  +19m02s518ms (2) 077 device_idle=off active=1000:"charging"

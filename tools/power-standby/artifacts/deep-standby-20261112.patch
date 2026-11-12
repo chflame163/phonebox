@@ -1,0 +1,154 @@
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+index 1c62544..8a55eaf 100755
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -17,7 +17,7 @@ android {
+         applicationId = "net.oxog.phonebox.deskpanel"
+         minSdk = 28
+         targetSdk = 35
+-        versionCode = 26
++        versionCode = 27
+         versionName = "0.9.3"
+     }
+ 
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 570ac71..41cebe2 100755
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -5,6 +5,8 @@
+     <uses-permission android:name="android.permission.VIBRATE" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
+     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
++    <!-- 这台手机只为面板服务：熄屏深睡时清掉其他应用的后台进程（普通权限，装完即生效） -->
++    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+ 
+     <application
+         android:icon="@mipmap/ic_launcher"
+diff --git a/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt b/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
+index 8f59f23..08dc518 100755
+--- a/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
++++ b/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
+@@ -75,6 +75,9 @@ class MainActivity : Activity(), SensorEventListener {
+     @Volatile private var usbLinkUp = false       // the phone sees an enumerated USB data link => that computer is up
+     @Volatile private var hostAlive = true        // what standby acts on; reconciled by healthTick
+     @Volatile private var hostLostSince = 0L      // elapsedRealtime of the first failing poll; 0 while alive
++    @Volatile private var deepStandby = false     // 熄屏 5 分钟后的省电态：只剩接收器在等主机回来
++    @Volatile private var lastInteractive = true
++    @Volatile private var screenOffSince = 0L     // elapsedRealtime of the screen going dark; 0 while awake
+     private val mainHandler = Handler(Looper.getMainLooper())
+     private val probes = Executors.newSingleThreadExecutor()
+     private var powerReceiver: BroadcastReceiver? = null
+@@ -181,8 +184,26 @@ class MainActivity : Activity(), SensorEventListener {
+         override fun run() {
+             usbLinkUp = readUsbLink()
+             reconcileStandby()
+-            if (!hostAlive) probeAgent()
+-            mainHandler.postDelayed(this, if (hostAlive) HEALTH_POLL_MS else STANDBY_POLL_MS)
++            val interactive = try {
++                getSystemService(PowerManager::class.java)?.isInteractive ?: true
++            } catch (e: Exception) {
++                true
++            }
++            if (interactive != lastInteractive) {
++                lastInteractive = interactive
++                if (!interactive) screenOffSince = SystemClock.elapsedRealtime()
++            }
++            // 主机不在且屏幕已黑着满 DEEP_AFTER_MS：进入省电态（面板不再每秒轮询、stream 不再每两秒重连）
++            if (!hostAlive && !deepStandby && !interactive && screenOffSince != 0L &&
++                SystemClock.elapsedRealtime() - screenOffSince >= DEEP_AFTER_MS) enterDeepStandby()
++            // 判死之后主动问一次 agent：清醒态握着 CPU 让请求落地；深睡态不握锁，让 doze 继续睡——
++            // 主机开机时 USB 事件会自己把面板叫醒，这条只是"数据线不带数据"时的兜底。
++            if (!hostAlive) probeAgent(holdCpu = !deepStandby)
++            mainHandler.postDelayed(this, when {
++                hostAlive -> HEALTH_POLL_MS
++                deepStandby -> DEEP_POLL_MS
++                else -> STANDBY_POLL_MS
++            })
+         }
+     }
+ 
+@@ -197,6 +218,7 @@ class MainActivity : Activity(), SensorEventListener {
+             hostLostSince = 0L
+             if (!hostAlive) {
+                 hostAlive = true
++                if (deepStandby) exitDeepStandby()
+                 android.util.Log.i("PhoneBox", "standby: the computer answers again (silent for ${silentFor / 1000}s) -> waking")
+                 refreshKeepAwake()
+                 wakeAndShowPanel()
+@@ -217,9 +239,9 @@ class MainActivity : Activity(), SensorEventListener {
+     /** Ask the agent directly, off the UI thread: the panel's own polls stop while the WebView idles, and a phone
+      *  that has slept must still notice the computer coming back. A held CPU lock keeps the request from being
+      *  frozen midway; a reply reopens the panel through healthTick. */
+-    private fun probeAgent() {
++    private fun probeAgent(holdCpu: Boolean = true) {
+         probes.execute {
+-            val held = try {
++            val held = if (!holdCpu) null else try {
+                 getSystemService(PowerManager::class.java)
+                     ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhoneBox:probe")?.apply { acquire(6_000L) }
+             } catch (e: Exception) {
+@@ -236,6 +258,35 @@ class MainActivity : Activity(), SensorEventListener {
+         }
+     }
+ 
++    /**
++     * The screen has been dark for DEEP_AFTER_MS with nothing answering: this phone is a panel, so quiet down to a
++     * bare watcher. The cost of staying "ready" is not the background apps (there is only this one) but our own
++     * polling - the page asks the agent once a second, the stream reconnects every two, and each probe holds the CPU
++     * six seconds, which is why a dark phone never reached doze at all (measured: 68 mA with the screen off, 0 mAh in
++     * doze because doze never happened). Stopping both leaves the two receivers registered: they cost nothing, and a
++     * booted server is seen by them the moment it enumerates the phone. Other apps' background processes get trimmed
++     * once here too, for the same reason - nothing on this device is allowed to spend its battery.
++     */
++    private fun enterDeepStandby() {
++        deepStandby = true
++        stream.stop()
++        runOnUiThread { web.onPause() }
++        var trimmed = 0
++        val am = getSystemService(ActivityManager::class.java)
++        if (am != null) for (p in TRIM_PACKAGES) runCatching { am.killBackgroundProcesses(p); trimmed += 1 }
++        android.util.Log.i("PhoneBox", "deep standby: panel polling stopped, background processes trimmed ($trimmed pkgs)")
++    }
++
++    /** The computer is back: bring the live stream and the page's own polling back before lighting the screen. */
++    private fun exitDeepStandby() {
++        deepStandby = false
++        runOnUiThread {
++            web.onResume()
++            stream.start()
++        }
++        android.util.Log.i("PhoneBox", "deep standby over: stream and polling resumed")
++    }
++
+     /** Light the display from the phone side and put the panel in front; harmless when already showing. */
+     private fun wakeAndShowPanel() {
+         val pm = getSystemService(PowerManager::class.java)
+@@ -394,6 +445,10 @@ class MainActivity : Activity(), SensorEventListener {
+         refreshKeepAwake() // a wake-up with no computer behind it (touch, home button) must not silently re-arm the hold
+         web.onResume()
+         stream.start()
++        // Someone is looking at it: leave the power-saving state and restart the five-minute window if they walk away.
++        if (deepStandby) exitDeepStandby()
++        screenOffSince = 0L
++        lastInteractive = true
+         mainHandler.removeCallbacks(healthTick)
+         mainHandler.post(healthTick) // look at reachability right now, then back to the usual rhythm
+         hideSystemUi()
+@@ -620,6 +675,17 @@ class MainActivity : Activity(), SensorEventListener {
+         // enumerates the phone, so this is only the fallback for a cable that carries no data - 15s keeps that case
+         // brisk without meaningfully shortening a night on battery.
+         private const val STANDBY_POLL_MS = 15_000L
++        // 熄屏满这个时间且主机仍不在 => 进入深睡省电态（停止面板轮询与 stream，只留接收器与慢心跳）
++        private const val DEEP_AFTER_MS = 300_000L
++        // 深睡态下的兜底间隔：不握 CPU 锁，让 doze 真的能睡下去；主机开机由 USB 事件叫醒，不靠这条
++        private const val DEEP_POLL_MS = 60_000L
++        // 这台手机只为面板服务：深睡时清掉这些 Lineage 预装应用的后台进程（killBackgroundProcesses 只需要普通权限）
++        private val TRIM_PACKAGES = listOf(
++            "org.lineageos.jelly", "org.lineageos.snap", "org.lineageos.eleven", "org.lineageos.etar",
++            "org.lineageos.recorder", "org.lineageos.updater", "org.lineageos.setupwizard",
++            "org.lineageos.audiofx", "org.lineageos.profiles", "org.lineageos.pocketmode",
++            "org.codeaurora.ims",
++        )
+ 
+         private const val ASSET_HOST = "appassets.androidplatform.net"
+         private val NO_STORE = mapOf("Cache-Control" to "no-store")

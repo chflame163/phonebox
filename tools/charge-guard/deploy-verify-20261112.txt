@@ -1,0 +1,39 @@
+SYNTAX_OK
+53373f23d90ffa924742d063e6b8cafa  /home/cc/bin/pb_chargeguard.sh
+=== 之前 timer 跑的 30 轮有没有报错（unbound variable 之类） ===
+Nov 12 12:16:47 cc-Ubuntu-3090 systemd[1319]: Starting pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching)...
+Nov 12 12:16:48 cc-Ubuntu-3090 pb_chargeguard.sh[327331]: level=100 charging_enabled=0 status=已充满
+Nov 12 12:16:48 cc-Ubuntu-3090 systemd[1319]: Finished pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching).
+Nov 12 12:17:48 cc-Ubuntu-3090 systemd[1319]: Starting pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching)...
+Nov 12 12:17:48 cc-Ubuntu-3090 pb_chargeguard.sh[329439]: level=100 charging_enabled=0 status=已充满
+Nov 12 12:17:48 cc-Ubuntu-3090 systemd[1319]: Finished pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching).
+Nov 12 12:18:53 cc-Ubuntu-3090 systemd[1319]: Starting pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching)...
+Nov 12 12:18:54 cc-Ubuntu-3090 pb_chargeguard.sh[331361]: level=100 charging_enabled=0 status=已充满
+Nov 12 12:18:54 cc-Ubuntu-3090 systemd[1319]: Finished pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching).
+Nov 12 12:19:54 cc-Ubuntu-3090 systemd[1319]: Starting pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching)...
+Nov 12 12:19:54 cc-Ubuntu-3090 pb_chargeguard.sh[333870]: level=100 charging_enabled=0 status=已充满
+Nov 12 12:19:54 cc-Ubuntu-3090 systemd[1319]: Finished pb-chargeguard.service - PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching).
+=== 现在 status ===
+level=100 charging_enabled=0 usb_online=0 status=已充满 thresholds: stop=80 restart=65 floor=25
+=== 走一遍会写日志的分支（on 然后 auto） ===
+level=100 charging_enabled=1 status=已充满
+level=100 charging_enabled=0 status=已充满
+2026-11-12T12:16:08+08:00 level=100 charging_enabled 1 -> 0 (读回 0) status=已充满 plugged=1
+2026-11-12T12:20:15+08:00 level=100 charging_enabled 0 -> 1 (读回 1) status=已充满 usb_online=0
+2026-11-12T12:20:18+08:00 level=100 charging_enabled 1 -> 0 (读回 0) status=已充满 usb_online=1
+=== 服务最近一次结果 ===
+Result=success
+ExecMainStatus=0
+=== 终态确认：停充中 + 面板正常 ===
+  node=0
+  status: 5   level: 100 
+  mWakefulness=Awake
+[{"id":"4429c9254086","model":"OnePlus ONEPLUS A3010","lastSeen":1794457220625,"via":"USB","name":null,"pages":null}]
+=== units 备份进 temp ===
+total 28
+drwxrwxr-x  2 cc cc  105 Nov 12 12:20 .
+drwxrwxr-x 66 cc cc 8192 Nov 12 12:20 ..
+-rw-rw-r--  1 cc cc  165 Nov 12 12:13 pb-chargeguard.service
+-rwx--x--x  1 cc cc 4259 Nov 12 12:20 pb_chargeguard.sh
+-rw-rw-r--  1 cc cc  139 Nov 12 12:13 pb-chargeguard.timer
+=== DONE ===

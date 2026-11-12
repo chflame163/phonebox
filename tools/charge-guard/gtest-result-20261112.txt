@@ -1,0 +1,31 @@
+=== A. 日常浅循环 65~80 ===
+  ok   82% 应停充                                  level=82 phase=daily[日常] charging_enabled=0
+  ok   64% 应复充                                  level=64 phase=daily[日常] charging_enabled=1
+  ok   72% 区间中保持原状(1)                   level=72 phase=daily[日常] charging_enabled=1
+  ok   72% 区间中保持原状(0)                   level=72 phase=daily[日常] charging_enabled=0
+  ok   20% 触发安全下限复充                   level=20 phase=daily[日常] charging_enabled=1
+  ok   5% 无条件复充                             level=5 phase=daily[日常] charging_enabled=1
+=== B. 周校验 40 -> 80 ===
+  ok   手动进周校验                             level=88 phase=weekly_dis[周校验·放电到 40%] charging_enabled=0
+  ok   放电中途(60)仍停充                      level=60 phase=weekly_dis[周校验·放电到 40%] charging_enabled=0
+  ok   到 39 转入回充                            level=39 phase=weekly_ch[周校验·回充到 80%] charging_enabled=1
+  ok   回充中途(50)继续充                      level=50 phase=weekly_ch[周校验·回充到 80%] charging_enabled=1
+  ok   到 81 回日常                               level=81 phase=daily[日常] charging_enabled=0
+=== C. 季度校验 20 -> 100 + 顶充 30 分钟 ===
+  ok   手动进季校验                             level=88 phase=qtr_dis[季校验·放电到 20%] charging_enabled=0
+  ok   到 19 转入回充                            level=19 phase=qtr_ch[季校验·回充到 100%] charging_enabled=1
+  ok   99% 还在回充                               level=99 phase=qtr_ch[季校验·回充到 100%] charging_enabled=1
+  ok   100% 转顶充                                 level=100 phase=qtr_top[季校验·满充后顶充 30 分钟] charging_enabled=1
+  ok   顶充 29 分钟继续等                      level=100 phase=qtr_top[季校验·满充后顶充 30 分钟] charging_enabled=1
+  ok   顶充 31 分钟结束回日常                level=100 phase=daily[日常] charging_enabled=0
+=== D. 到期自动起校验（从上次完成时间算） ===
+  ok   7 天后自动起周校验                     level=70 phase=weekly_dis[周校验·放电到 40%] charging_enabled=0
+  ok   90 天后自动起季校验                    level=70 phase=qtr_dis[季校验·放电到 20%] charging_enabled=0
+  ok   季校验优先于周校验                    level=70 phase=qtr_dis[季校验·放电到 20%] charging_enabled=0
+=== E. 保护与超时 ===
+  ok   放电阶段超时退回日常                 level=50 phase=daily[日常] charging_enabled=1
+  ok   回充阶段超时退回日常                 level=60 phase=daily[日常] charging_enabled=1
+  ok   校验中电量 5% 立即中止                level=5 phase=daily[日常] charging_enabled=1
+  ok   reset 回日常                                level=60 phase=daily[日常] charging_enabled=1
+
+=== 汇总: pass=24 fail=0 ===

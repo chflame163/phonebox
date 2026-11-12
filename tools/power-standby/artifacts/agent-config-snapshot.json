@@ -1,0 +1,34 @@
+{
+ "display": {
+  "showSeconds": true,
+  "idleReturnSec": 90,
+  "vibrate": true,
+  "volumeKeys": true,
+  "orientation": "landscape",
+  "theme": "default",
+  "accent": "#2dd4bf",
+  "artTint": true,
+  "autoBrightness": false,
+  "nightWhenDark": false,
+  "proximityWake": true,
+  "pin": false,
+  "homeScreen": true,
+  "keepAwake": true,
+  "powerStandby": true,
+  "powerStandbyDelaySec": 5,
+  "followComputerLock": false,
+  "switchCountdownSec": 3,
+  "touchGraceSec": 20,
+  "minDwellSec": 15,
+  "holdMaxMin": 30
+ },
+ "weather": {
+  "city": "Beijing",
+  "lat": 39.89,
+  "lon": 116.84
+ },
+ "updates": {
+  "auto": false,
+  "repo": "ersinkoc/phonebox"
+ }
+}

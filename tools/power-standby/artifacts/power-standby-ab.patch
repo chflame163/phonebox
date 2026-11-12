@@ -1,0 +1,107 @@
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index caf3322..3bffd59 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -4,6 +4,7 @@
+     <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="android.permission.VIBRATE" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
++    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
+ 
+     <application
+         android:icon="@mipmap/ic_launcher"
+diff --git a/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt b/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
+index e2a5157..47db625 100644
+--- a/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
++++ b/android/app/src/main/java/net/oxog/phonebox/deskpanel/MainActivity.kt
+@@ -8,6 +8,7 @@ import android.content.Context
+ import android.content.ComponentName
+ import android.content.Intent
+ import android.content.IntentFilter
++import android.app.KeyguardManager
+ import android.content.pm.ActivityInfo
+ import android.content.pm.PackageManager
+ import android.hardware.Sensor
+@@ -67,26 +68,37 @@ class MainActivity : Activity(), SensorEventListener {
+     @Volatile private var pluggedIn = true
+     private val mainHandler = Handler(Looper.getMainLooper())
+     private var powerReceiver: BroadcastReceiver? = null
++    @Volatile private var lastPlugged = true
+ 
+     /** The app may keep the display on whenever it is powered, or when standby is off entirely. */
+     private fun refreshKeepAwake() {
+         if (!standbyEnabled || pluggedIn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
++        // Force ViewRootImpl to push the new window attributes on the next traversal: without a layout request a
++        // static page never relayouts, so WindowManager keeps the stale keep-awake wakelock forever (Android 11+).
++        window.decorView.requestLayout()
+     }
+ 
+     private fun registerPowerReceiver() {
++        // ACTION_POWER_CONNECTED/DISCONNECTED are implicit-broadcast-restricted since Android 8 and never reach a
++        // runtime receiver on ANY modern phone. Watch the exempt sticky ACTION_BATTERY_CHANGED instead and treat an
++        // EXTRA_PLUGGED flip as the connect/disconnect edge.
+         val filter = IntentFilter().apply {
+-            addAction(Intent.ACTION_POWER_CONNECTED)
+-            addAction(Intent.ACTION_POWER_DISCONNECTED)
++            addAction(Intent.ACTION_BATTERY_CHANGED)
+         }
+         val receiver = object : BroadcastReceiver() {
+             override fun onReceive(context: Context?, intent: Intent?) {
+-                val connected = when (intent?.action) {
+-                    Intent.ACTION_POWER_CONNECTED -> true
+-                    Intent.ACTION_POWER_DISCONNECTED -> false
+-                    else -> return
+-                }
+-                mainHandler.post { onPowerChanged(connected) }
++                val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
++                    ?: BatteryManager.BATTERY_STATUS_UNKNOWN
++                // A charged-to-100% phone drops EXTRA_PLUGGED while EXTRA_STATUS keeps reporting CHARGING/FULL:
++                // treat those states as "cable in" too, otherwise a fully-charged desk phone sleeps for good.
++                val plugged = (intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
++                    status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
++                if (plugged == lastPlugged) return
++                lastPlugged = plugged
++                android.util.Log.i("PhoneBox", "plug edge via battery-changed: plugged=" + plugged)
++                android.util.Log.i("PhoneBox", "plug edge via battery-changed: plugged=" + plugged)
++                mainHandler.post { onPowerChanged(plugged) }
+             }
+         }
+         powerReceiver = receiver
+@@ -95,12 +107,20 @@ class MainActivity : Activity(), SensorEventListener {
+         else
+             registerReceiver(receiver, filter)
+         // The sticky battery broadcast settles the initial state (a reboot into an unpowered hub should not light up).
+-        pluggedIn = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+-            ?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
++        run {
++            val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
++            val st = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
++                ?: BatteryManager.BATTERY_STATUS_UNKNOWN
++            pluggedIn = (sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
++                st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL
++        }
++        lastPlugged = pluggedIn
++        android.util.Log.i("PhoneBox", "standby receiver registered, init pluggedIn=" + pluggedIn)
+         refreshKeepAwake()
+     }
+ 
+     private fun onPowerChanged(connected: Boolean) {
++        android.util.Log.i("PhoneBox", "power changed: connected=" + connected + " standby=" + standbyEnabled + " delayMs=" + standbyDelayMs)
+         pluggedIn = connected
+         mainHandler.removeCallbacksAndMessages(null)
+         if (connected) {
+@@ -129,6 +149,13 @@ class MainActivity : Activity(), SensorEventListener {
+             ).acquire(3_000L) // the flag lets a plain app wake the screen; no root, no device owner needed
+         startActivity(Intent(this, MainActivity::class.java)
+             .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
++        // A swipe keyguard (Lineage default, isSecure=false) would otherwise keep the woken panel behind a lock
++        // screen nobody is there to swipe; requestDismissKeyguard clears it (DISABLE_KEYGUARD is a normal perm).
++        try {
++            (getSystemService(KEYGUARD_SERVICE) as? KeyguardManager)?.requestDismissKeyguard(this, null)
++        } catch (e: Exception) {
++            android.util.Log.w("PhoneBox", "keyguard dismiss failed: " + e)
++        }
+     }
+ 
+     private val assetLoader by lazy {
