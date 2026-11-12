@@ -6,7 +6,8 @@ Auto-discovers the running online serve (process running serve/server.py) for it
   strata_tps      decode tokens/sec
   strata_prefill  prefill tokens/sec
   strata_ctx      context fill % (also drives a gauge ring via progress)
-  gpu_power       GPU board power draw (W) — nvidia-smi power.draw, level color-coded at 50/80% of power.limit
+  gpu_power       GPU board power draw (W) — nvidia-smi power.draw; level by absolute watts
+                  (<=GW_WARN ok, <=GW_ERR warn, above that error — 100/300 as of 2026-11-12 16:0x)
   vram_gb         GPU memory in use as GB (e.g. 23.1 — set the widget's gauge max to 24) — same nvidia-smi call.
                   progress still carries the %, sub "96.3% · 912 MiB free".
                   level = headroom (free<=VR_WARN_FREE warn, <=VR_ERR_FREE error).
@@ -31,6 +32,9 @@ FALLBACK_PORT = "8080"
 # （实测 23,664/24,576 MiB，free 只有 912）。阈值按用户 11-12 15:5x 指定 = 2000 / 500：
 # 余量不到 2G 就橙（所以常态 912 本来就是橙色），掉进 500 MiB 以内才算真危险(红)。
 VR_WARN_FREE, VR_ERR_FREE = 2000, 500
+# gpu_power 按绝对瓦数分级（用户 11-12 16:0x 指定）：≤100W 绿、100–300W 橙、>300W 红。
+# 之前是按 power.limit 的 50/80% 比例（350W 墙 ⇒ 175/280），改绝对值后 limit 只进缓存、不参与判定。
+GW_WARN, GW_ERR = 100.0, 300.0
 
 
 def discover():
@@ -184,11 +188,11 @@ def main():
 
     # GPU power + VRAM（同一次 nvidia-smi 查询）。gpu_power 按 draw/limit 比例着色；
     # vram_pct 按“还剩多少余量”着色：这台 strata 常驻就有 ~88%，所以红线留给真吃紧的 90/95。
-    gw, glimit, vu, vt = gpu_stats()
+    gw, glimit, vu, vt = gpu_stats()          # glimit 现在只进缓存，不参与着色（阈值见 GW_WARN/GW_ERR）
     if gw is not None and gw > 0:
-        ratio = (gw / glimit) if (glimit and glimit > 0) else (gw / 350.0)
         push("gpu_power", {"value": gw, "unit": "W", "ttl": 20,
-                           "level": "error" if ratio >= 0.8 else ("warn" if ratio >= 0.5 else "ok")})
+                           "level": "error" if gw > GW_ERR else
+                                    ("warn" if gw > GW_WARN else "ok")})
     vram_txt = "n/a"
     if vu and vt:
         vp = round(100.0 * vu / vt, 1)
