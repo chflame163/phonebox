@@ -65,9 +65,25 @@ wakes on the **enumeration event** instead.
   4. Battery edges ride `ACTION_BATTERY_CHANGED`, and `STATUS=CHARGING|FULL` counts as
      plugged even when `EXTRA_PLUGGED` misreads 0 at 100 % on some HALs.
 - **Ops scripts** (deployed as systemd user timers, archived in the repo):
-  `tools/panel-metrics/` pushes custom values with a `level` field (what colors the built-in
-  Pushed value widget; `gpu_power` thresholds at 50/80 % of the live `power.limit`) and keeps
-  the reference panel layout `agent-config-snapshot-*.json` with LAN tokens **redacted**;
+  `tools/panel-metrics/` feeds the panel from the Strata inference engine: `pb_strata_push.py` runs on a
+  **1 s** systemd user timer, auto-discovers whichever instance owns port 8080 (its `--config` json for the
+  `api_key`, `--port`), and pushes `strata_state`, `strata_tps`, `strata_prefill`, `strata_ctx`, `gpu_power`
+  and `vram_gb`. Every payload carries the `level` field that colors the built-in Pushed value widget, with
+  the thresholds kept as plain constants at the top of the file - `gpu_power` by absolute watts (100 / 300),
+  `vram_gb` by MiB left free (2000 / 500), `strata_ctx` by K tokens in use (320 / 440) - because this engine
+  parks at ~96 % VRAM and ~330 W by design, so share-of-limit thresholds would read red all day.
+  `nvidia-smi` is served from a 5 s cache, so a 1 s tick never waits on the GPU lock.
+  `strata_model_state_html_widget.html` is the Custom HTML widget that reproduces the engine's own
+  *Model state* card: six pills (idle / unloaded / reading / generating / queued / error) that dim to
+  `opacity .38` rather than turning grey, the engine's exact wording (`98,304 / 141,037 tokens · 70%`,
+  `Writing a tool call: …`), blue bar while reading, and two deliberate upgrades over the built-in page -
+  the generating bar divides by `out_est` (p75 of the last eight outputs) instead of a client `max_tokens`
+  of 359,945, and where no honest denominator exists it paints a 32 % wash with a sweeping highlight, which
+  is what the React Monitor's `indeterminate` does. `gen_verify.mjs` builds an offline PhoneBox-sized shell
+  around the snippet and drives it through the widget's own `__msRender` hook, so all eight states can be
+  screenshotted without a phone; `TESTLOG-20261112.md` holds the measurements, the source-by-source mapping
+  back to `serve/web` and one-line rollbacks. The panel layout itself is archived as
+  `agent-config-snapshot-*.json` with the two LAN tokens **redacted**;
   `tools/power-standby/` holds the host sleep/wake adb hooks - `pb-sleep.sh` deliberately does
   *not* force-stop the panel app, that would forfeit the enumeration fast-wake - plus build
   scripts, patch series and TESTLOGs with per-second timelines;
