@@ -7,10 +7,17 @@ Auto-discovers the running online serve (process running serve/server.py) for it
   strata_prefill  prefill tokens/sec
   strata_ctx      context fill % (also drives a gauge ring via progress)
   gpu_power       GPU board power draw (W) — nvidia-smi power.draw, level color-coded at 50/80% of power.limit
+  strata_state    the engine's live model state, for the "Model state" Custom HTML widget
+                  (6 lit-able badges + progress bar). Raw /metrics live fields are passed through untouched;
+                  the widget itself reproduces serve/web/app.js renderMonitor() (label / detail / pct / tone).
+                  payload: {state, raw_state, queued, phase, prompt_read, prompt_total, prompt_tokens,
+                            generated, max_tokens, tok_s, last_detail?, ttl:20}
+                  state = live.state ("idle"|"reading"|"generating"|"unloaded"|"error"); the widget lights
+                  "queued" itself when queued > 0, exactly like the engine's own Monitor.
 On any read failure it skips the affected push so the last value expires by its ttl.
 (vram_pct / cpu_power / power_total were dropped on 2026-11-12 per user request.)
 """
-import os, json, glob, subprocess, urllib.request
+import json, glob, os, subprocess, urllib.request
 
 AGENT = "http://127.0.0.1:8765"
 FALLBACK_KEY = os.environ.get("PB_STRATA_FALLBACK_KEY", "REPLACE-WITH-STRATA-API-KEY")
@@ -120,6 +127,24 @@ def main():
     if fill is not None:
         push("strata_ctx", {"value": fill, "unit": "%", "progress": fill, "ttl": 60,
                             "level": "error" if fill >= 90 else ("warn" if fill >= 75 else "ok")})
+
+    # model state: raw live fields + health.loaded 兜底，控件自己复刻引擎 Monitor 的文案与点亮逻辑
+    health = get_json(f"{base}/health", api)
+    st = live.get("state")
+    if health is not None and health.get("loaded") is False and st in (None, "idle"):
+        st = "unloaded"
+    if st:
+        body = {"state": st, "raw_state": live.get("state"),
+                "queued": live.get("queued") or 0, "phase": live.get("phase"),
+                "prompt_read": live.get("prompt_read"), "prompt_total": live.get("prompt_total"),
+                "prompt_tokens": live.get("prompt_tokens"),
+                "generated": live.get("generated"), "max_tokens": live.get("max_tokens"),
+                "tok_s": live.get("tok_s"), "ttl": 20}
+        if latest and latest.get("output_tokens") is not None:
+            ld = latest.get("decode_tok_s")
+            body["last_detail"] = f"last: {int(latest['output_tokens']):,} tokens" + (
+                f" at {float(ld):,.1f} tok/s" if ld else "")
+        push("strata_state", body)
 
     # GPU power (one nvidia-smi call). gpu_power is colored by % of the current power limit
     gw, glimit = gpu_stats()
