@@ -7,6 +7,8 @@ Auto-discovers the running online serve (process running serve/server.py) for it
   strata_prefill  prefill tokens/sec
   strata_ctx      context fill % (also drives a gauge ring via progress)
   gpu_power       GPU board power draw (W) — nvidia-smi power.draw, level color-coded at 50/80% of power.limit
+  vram_pct        GPU memory used % — same nvidia-smi call; gauge max=100, level by headroom (>=90 warn, >=95 error),
+                  sub carries "21.7 / 24.0 GB". (Dropped on 2026-11-12 13:5x, put back the same evening on request.)
   strata_state    the engine's live model state, for the "Model state" Custom HTML widget
                   (6 lit-able badges + progress bar). Raw /metrics live fields are passed through untouched;
                   the widget itself reproduces serve/web/app.js renderMonitor() (label / detail / pct / tone).
@@ -15,13 +17,17 @@ Auto-discovers the running online serve (process running serve/server.py) for it
                   state = live.state ("idle"|"reading"|"generating"|"unloaded"|"error"); the widget lights
                   "queued" itself when queued > 0, exactly like the engine's own Monitor.
 On any read failure it skips the affected push so the last value expires by its ttl.
-(vram_pct / cpu_power / power_total were dropped on 2026-11-12 per user request.)
+(cpu_power / power_total were dropped on 2026-11-12 per user request; vram_pct came back with the VRAM widget.)
 """
 import json, glob, os, subprocess, time, urllib.request
 
 AGENT = "http://127.0.0.1:8765"
 FALLBACK_KEY = os.environ.get("PB_STRATA_FALLBACK_KEY", "REPLACE-WITH-STRATA-API-KEY")
 FALLBACK_PORT = "8080"
+# vram_pct 的着色按“还剩多少显存”(MiB) 而不是占用百分比：这台引擎常驻就把 24G 吃到 ~96%
+# （实测 23,664/24,576 MiB，free 912），按百分比阈值会常年红色、失去告警意义。
+# 地板参照 --vram-reserve-mib 768 → 引擎自留 ~523 MiB，所以 700/400 才是真吃紧的信号。
+VR_WARN_FREE, VR_ERR_FREE = 700, 400
 
 
 def discover():
@@ -69,29 +75,31 @@ GPU_CACHE = "/tmp/pb_gpu_cache.json"
 
 
 def gpu_stats(max_age=5.0):
-    """(power_w, power_limit_w), nvidia-smi 每 max_age 秒才真查一次（结果缓存在 GPU_CACHE）。
-    timer 提到 1s 后不能每秒 fork 一次 nvidia-smi：满载时它自己要等 0.2-0.5s 的锁。
-    (None, None) on failure."""
+    """(power_w, power_limit_w, vram_used_mb, vram_total_mb)，nvidia-smi 每 max_age 秒才真查一次
+    （结果缓存在 GPU_CACHE）。timer 提到 1s 后不能每秒 fork 一次 nvidia-smi：满载时它自己要等
+    0.2-0.5s 的锁。显存是同一次查询顺带拿的，不额外加开销。失败时四项全 None。"""
     try:
         c = json.load(open(GPU_CACHE))
-        if time.time() - float(c.get("ts", 0)) < max_age:
-            return c["draw"], c["limit"]
+        # used/total 也在才算有效：老缓存只有瓦数，直接复用会让 vram_pct 静默消失
+        if time.time() - float(c.get("ts", 0)) < max_age and c.get("used") and c.get("total"):
+            return c["draw"], c["limit"], c["used"], c["total"]
     except Exception:
         pass
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=power.draw,power.limit",
+            ["nvidia-smi", "--query-gpu=power.draw,power.limit,memory.used,memory.total",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=6).stdout.split("\n")[0]
         p = [x.strip() for x in out.split(",")]
-        res = (round(float(p[0]), 1), round(float(p[1]), 1))
+        res = (round(float(p[0]), 1), round(float(p[1]), 1), int(float(p[2])), int(float(p[3])))
         try:
-            json.dump({"ts": time.time(), "draw": res[0], "limit": res[1]}, open(GPU_CACHE, "w"))
+            json.dump({"ts": time.time(), "draw": res[0], "limit": res[1],
+                       "used": res[2], "total": res[3]}, open(GPU_CACHE, "w"))
         except Exception:
             pass
         return res
     except Exception:
-        return None, None
+        return None, None, None, None
 
 
 def main():
@@ -171,14 +179,24 @@ def main():
             body["out_est"] = max(outs[min(len(outs) - 1, int(0.75 * len(outs)))], 512)
         push("strata_state", body)
 
-    # GPU power (one nvidia-smi call). gpu_power is colored by % of the current power limit
-    gw, glimit = gpu_stats()
+    # GPU power + VRAM（同一次 nvidia-smi 查询）。gpu_power 按 draw/limit 比例着色；
+    # vram_pct 按“还剩多少余量”着色：这台 strata 常驻就有 ~88%，所以红线留给真吃紧的 90/95。
+    gw, glimit, vu, vt = gpu_stats()
     if gw is not None and gw > 0:
         ratio = (gw / glimit) if (glimit and glimit > 0) else (gw / 350.0)
         push("gpu_power", {"value": gw, "unit": "W", "ttl": 20,
                            "level": "error" if ratio >= 0.8 else ("warn" if ratio >= 0.5 else "ok")})
+    vram_txt = "n/a"
+    if vu and vt:
+        vp = round(100.0 * vu / vt, 1)
+        free = vt - vu
+        vram_txt = f"{vp}% ({vu / 1024:.1f}G, free {free} MiB)"
+        push("vram_pct", {"value": vp, "unit": "%", "progress": vp, "ttl": 20,
+                          "sub": f"{vu / 1024:.1f} / {vt / 1024:.1f} GB · {free} MiB free",
+                          "level": "error" if free <= VR_ERR_FREE else
+                                   ("warn" if free <= VR_WARN_FREE else "ok")})
 
-    print(f"base={base} decode={speed} prefill={prefill} fill={fill} gpu_w={gw}")
+    print(f"base={base} decode={speed} prefill={prefill} fill={fill} gpu_w={gw} vram={vram_txt}")
 
 
 if __name__ == "__main__":
