@@ -148,6 +148,33 @@ class MainActivity : Activity(), SensorEventListener {
         false
     }
 
+    /**
+     * The instant the computer enumerates this phone, USB_STATE says so - that is a hardware-level proof that it is
+     * running, and it arrives about a second after its kernel comes up, long before any service does. Reacting to the
+     * edge instead of waiting for the next poll is what lights the panel the moment a booted server appears, and it
+     * is also the only path that works when the agent starts late or the Wi-Fi pairing is stale.
+     */
+    private var usbLinkReceiver: BroadcastReceiver? = null
+    private fun registerUsbLinkReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val up = intent?.getBooleanExtra("configured", false) == true ||
+                    intent?.getBooleanExtra("connected", false) == true
+                if (up == usbLinkUp) return
+                usbLinkUp = up
+                android.util.Log.i("PhoneBox", "USB data link -> $up (reconciling now)")
+                mainHandler.removeCallbacks(healthTick)
+                mainHandler.post(healthTick)
+            }
+        }
+        usbLinkReceiver = receiver
+        val filter = IntentFilter("android.hardware.usb.action.USB_STATE")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else
+            registerReceiver(receiver, filter)
+    }
+
     /** Watch the reachability of the computer: quickly while it answers, slowly (and with a short CPU wake, so doze
      *  lets the request land) after the panel has slept. */
     private val healthTick = object : Runnable {
@@ -292,6 +319,7 @@ class MainActivity : Activity(), SensorEventListener {
         web.loadUrl("https://$ASSET_HOST/assets/www/index.html")
         hideSystemUi()
         registerPowerReceiver()
+        registerUsbLinkReceiver()
         // Start from "the computer is there" and let the polls correct it: the first request needs a moment, while the
         // USB data link is known at once, so a phone booting into an unpowered hub still goes dark shortly after.
         agentDataAt = SystemClock.elapsedRealtime()
@@ -385,6 +413,8 @@ class MainActivity : Activity(), SensorEventListener {
         probes.shutdownNow()
         powerReceiver?.let { runCatching { unregisterReceiver(it) } }
         powerReceiver = null
+        usbLinkReceiver?.let { runCatching { unregisterReceiver(it) } }
+        usbLinkReceiver = null
         super.onDestroy()
     }
 
@@ -586,9 +616,10 @@ class MainActivity : Activity(), SensorEventListener {
         private const val AGENT_SILENCE_MS = 12_000L
         private const val HEALTH_POLL_MS = 2_000L
         // After the panel has slept the phone is on battery and dozing: check the computer this often, each check
-        // holding the CPU a few seconds. Long enough to spare the battery for a night without the server, short enough
-        // to bring the panel back on its own.
-        private const val STANDBY_POLL_MS = 30_000L
+        // holding the CPU a few seconds. The USB_STATE receiver normally brings the panel back the second the server
+        // enumerates the phone, so this is only the fallback for a cable that carries no data - 15s keeps that case
+        // brisk without meaningfully shortening a night on battery.
+        private const val STANDBY_POLL_MS = 15_000L
 
         private const val ASSET_HOST = "appassets.androidplatform.net"
         private val NO_STORE = mapOf("Cache-Control" to "no-store")
