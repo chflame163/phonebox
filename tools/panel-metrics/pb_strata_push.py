@@ -7,8 +7,10 @@ Auto-discovers the running online serve (process running serve/server.py) for it
   strata_prefill  prefill tokens/sec
   strata_ctx      context fill % (also drives a gauge ring via progress)
   gpu_power       GPU board power draw (W) — nvidia-smi power.draw, level color-coded at 50/80% of power.limit
-  vram_pct        GPU memory used % — same nvidia-smi call; gauge max=100, level by headroom (>=90 warn, >=95 error),
-                  sub carries "21.7 / 24.0 GB". (Dropped on 2026-11-12 13:5x, put back the same evening on request.)
+  vram_pct        GPU memory in use as GB (e.g. 23.5, so set the widget's gauge max to 24) — same nvidia-smi call.
+                  key keeps the old name so the panel widget needs no re-keying; progress still carries the %,
+                  sub "96.3% · 912 MiB free". level = headroom (free<=VR_WARN_FREE warn, <=VR_ERR_FREE error).
+                  (Dropped 13:5x on 2026-11-12, put back the same evening as the VRAM widget.)
   strata_state    the engine's live model state, for the "Model state" Custom HTML widget
                   (6 lit-able badges + progress bar). Raw /metrics live fields are passed through untouched;
                   the widget itself reproduces serve/web/app.js renderMonitor() (label / detail / pct / tone).
@@ -189,10 +191,12 @@ def main():
     vram_txt = "n/a"
     if vu and vt:
         vp = round(100.0 * vu / vt, 1)
+        gb = round(vu / 1024.0, 1)          # 用户 15:5x 要求：值直接显示 GB（如 23.5），gauge max 填 24
         free = vt - vu
-        vram_txt = f"{vp}% ({vu / 1024:.1f}G, free {free} MiB)"
-        push("vram_pct", {"value": vp, "unit": "%", "progress": vp, "ttl": 20,
-                          "sub": f"{vu / 1024:.1f} / {vt / 1024:.1f} GB · {free} MiB free",
+        vram_txt = f"{gb}G/{round(vt / 1024.0, 1)}G ({vp}%, free {free} MiB)"
+        # key 名仍是 vram_pct（面板控件不用改 key），但 value 已是 GB；progress 仍给百分比供 bar/环用
+        push("vram_pct", {"value": gb, "unit": "GB", "progress": vp, "ttl": 20,
+                          "sub": f"{vp:.1f}% · {free} MiB free",
                           "level": "error" if free <= VR_ERR_FREE else
                                    ("warn" if free <= VR_WARN_FREE else "ok")})
 
