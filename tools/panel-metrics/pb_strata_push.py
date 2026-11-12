@@ -17,7 +17,7 @@ Auto-discovers the running online serve (process running serve/server.py) for it
 On any read failure it skips the affected push so the last value expires by its ttl.
 (vram_pct / cpu_power / power_total were dropped on 2026-11-12 per user request.)
 """
-import json, glob, os, subprocess, urllib.request
+import json, glob, os, subprocess, time, urllib.request
 
 AGENT = "http://127.0.0.1:8765"
 FALLBACK_KEY = os.environ.get("PB_STRATA_FALLBACK_KEY", "REPLACE-WITH-STRATA-API-KEY")
@@ -65,15 +65,31 @@ def push(key, body):
         return False
 
 
-def gpu_stats():
-    """One nvidia-smi call -> (power_w, power_limit_w). (None, None) on failure."""
+GPU_CACHE = "/tmp/pb_gpu_cache.json"
+
+
+def gpu_stats(max_age=5.0):
+    """(power_w, power_limit_w), nvidia-smi 每 max_age 秒才真查一次（结果缓存在 GPU_CACHE）。
+    timer 提到 1s 后不能每秒 fork 一次 nvidia-smi：满载时它自己要等 0.2-0.5s 的锁。
+    (None, None) on failure."""
+    try:
+        c = json.load(open(GPU_CACHE))
+        if time.time() - float(c.get("ts", 0)) < max_age:
+            return c["draw"], c["limit"]
+    except Exception:
+        pass
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=power.draw,power.limit",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=6).stdout.split("\n")[0]
         p = [x.strip() for x in out.split(",")]
-        return round(float(p[0]), 1), round(float(p[1]), 1)
+        res = (round(float(p[0]), 1), round(float(p[1]), 1))
+        try:
+            json.dump({"ts": time.time(), "draw": res[0], "limit": res[1]}, open(GPU_CACHE, "w"))
+        except Exception:
+            pass
+        return res
     except Exception:
         return None, None
 
@@ -144,6 +160,15 @@ def main():
             ld = latest.get("decode_tok_s")
             body["last_detail"] = f"last: {int(latest['output_tokens']):,} tokens" + (
                 f" at {float(ld):,.1f} tok/s" if ld else "")
+        # generating 的进度分母：引擎自带面板用 max_tokens（本会话客户端给的是 359,945 ⇒ 条子永远贴地）。
+        # 这里另给一个经验分母 = 最近 8 个请求 output_tokens 的 p75（下限 512，避免一次短应答就把条顶满），
+        # 控件优先用它，生成段就有了真实行程；无样本时控件退 indeterminate 扫动。
+        # detail 里的 token 数字仍是引擎原口径，一点没改。
+        outs = [int(r.get("output_tokens") or 0) for r in
+                sorted(reqs, key=lambda r: r.get("time") or 0)][-8:]
+        outs = sorted(o for o in outs if o > 0)
+        if outs:
+            body["out_est"] = max(outs[min(len(outs) - 1, int(0.75 * len(outs)))], 512)
         push("strata_state", body)
 
     # GPU power (one nvidia-smi call). gpu_power is colored by % of the current power limit

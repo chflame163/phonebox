@@ -36,9 +36,16 @@
 .ms__badge.on{opacity:1}
 .ms__row{display:flex;justify-content:space-between;align-items:baseline;gap:1em;font-size:1em;font-weight:500;line-height:1.25;flex:none;min-width:0}
 .ms__row .muted{color:var(--ms-ink-muted);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ms__prog{height:.62em;border-radius:9999px;background:var(--ms-surface-2);border:1px solid var(--ms-line-soft);overflow:hidden;flex:none}
+.ms__prog{position:relative;height:.62em;border-radius:9999px;background:var(--ms-surface-2);border:1px solid var(--ms-line-soft);overflow:hidden;flex:none}
 .ms__bar{height:100%;border-radius:inherit;background:var(--ms-accent);transition:width 160ms var(--ms-ease)}
 .ms__prog[data-tone="info"] .ms__bar{background:var(--ms-info)}
+/* 没有可靠分母时的“进行中”显示：整条 32% 淡底 + 一块扫光（Strata React 版 Monitor 的 indeterminate 思路） */
+.ms__bar--indet{width:100% !important;opacity:.32}   /* 元素上有条内联 width:0%，这里必须 !important 才能铺出淡底 */
+.ms__prog--indet::after{content:"";position:absolute;top:0;bottom:0;left:0;width:24%;border-radius:9999px;
+  background:var(--ms-accent);animation:ms-sweep 1.5s var(--ms-ease) infinite alternate}
+.ms__prog[data-tone="info"].ms__prog--indet::after{background:var(--ms-info)}
+@keyframes ms-sweep{0%{transform:translateX(-30%)}100%{transform:translateX(330%)}}
+@media (prefers-reduced-motion:reduce){.ms__prog--indet::after{animation:none;left:auto;right:0;width:38%}}
 .ms__prog[data-tone="warn"] .ms__bar{background:var(--ms-warn)}
 .ms__prog[data-tone="danger"] .ms__bar{background:var(--ms-danger)}
 </style>
@@ -94,33 +101,38 @@
       b.classList.toggle("on", s === lit || s === state);
     });
 
-    var label = "Waiting for a request", detail = "", pct = 0, tone = null;   // renderMonitor() 的分支
+    var label = "Waiting for a request", detail = "", pct = 0, tone = null, indet = false;
     if (state === "reading") {
       label = "Reading prompt"; tone = "info";
-      if (+d.prompt_total) {
+      if (+d.prompt_total) {                     // 引擎原样：read / total tokens · N%
         pct = (100 * +d.prompt_read) / +d.prompt_total;
         detail = fmt(d.prompt_read) + " / " + fmt(d.prompt_total) + " tokens · " + fmt(pct) + "%";
-      } else {
-        detail = fmt(d.prompt_tokens) + " tokens";
+      } else {                                   // prompt 不足一个 prefill chunk → 引擎也不报进度
+        detail = fmt(d.prompt_tokens) + " tokens"; indet = true;
       }
     } else if (state === "generating") {
       label = d.phase ? String(d.phase).charAt(0).toUpperCase() + String(d.phase).slice(1) : "Generating";
-      pct = +d.max_tokens ? Math.min(100, (100 * +d.generated) / +d.max_tokens) : 0;
       detail = fmt(d.generated) + " tokens · " + fmt(d.tok_s, 1) + " tok/s";
+      var est = +d.out_est || 0, cap = +d.max_tokens || 0;   // 分母见下面的优先级
+      if (est > 0) pct = Math.min(100, (100 * +d.generated) / est);        // ① 最近请求输出中位数（面板才会真的走）
+      else if (cap > 0 && cap <= 1024) pct = Math.min(100, (100 * +d.generated) / cap);  // ② 客户端给了小上限=真上限
+      else indet = true;                                                    // ③ 没得估 → 扫动
     } else if (state === "unloaded") {
       label = "Unloaded"; detail = "Load brings it back. A message does too.";
     } else if (d.last_detail) {
       detail = String(d.last_detail);            // idle：引擎的 "last: N tokens at X tok/s"
     }
-    paint(state, label, detail, pct, tone);
+    paint(state, label, detail, pct, tone, indet);
   }
 
-  function paint(state, label, detail, pct, tone) {
+  function paint(state, label, detail, pct, tone, indet) {
     labelEl.textContent = label || "Waiting for a request";
     detailEl.textContent = detail || "–";
     if (tone) progEl.setAttribute("data-tone", tone); else progEl.removeAttribute("data-tone");
     var p = +pct; if (!isFinite(p) || p < 0) p = 0; if (p > 100) p = 100;
-    barEl.style.width = p + "%";
+    barEl.classList.toggle("ms__bar--indet", !!indet);   // 无分母时：淡底+扫光，别停在 0% 看着像坏了
+    progEl.classList.toggle("ms__prog--indet", !!indet);
+    if (!indet) barEl.style.width = p + "%";
     fit();
   }
 
