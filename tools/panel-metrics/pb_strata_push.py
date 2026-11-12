@@ -5,7 +5,9 @@ Auto-discovers the running online serve (process running serve/server.py) for it
 --port, so it survives iq3s / UD swaps. Pushes webhook keys the panel reads with Pushed value widgets:
   strata_tps      decode tokens/sec
   strata_prefill  prefill tokens/sec
-  strata_ctx      context fill % (also drives a gauge ring via progress)
+  strata_ctx      context in use on the **K tokens** scale (value = n_prompt_tokens/1024, unit KB, so the
+                  widget's gauge max goes to 512); progress still carries the fill %, sub shows
+                  "58.3% · 305,506 / 524,288 tokens"; level = CTX_WARN_KB / CTX_ERR_KB (320 / 440)
   gpu_power       GPU board power draw (W) — nvidia-smi power.draw; level by absolute watts
                   (<=GW_WARN ok, <=GW_ERR warn, above that error — 100/300 as of 2026-11-12 16:0x)
   vram_gb         GPU memory in use as GB (e.g. 23.1 — set the widget's gauge max to 24) — same nvidia-smi call.
@@ -35,6 +37,10 @@ VR_WARN_FREE, VR_ERR_FREE = 2000, 500
 # gpu_power 按绝对瓦数分级（用户 11-12 16:0x 指定）：≤100W 绿、100–300W 橙、>300W 红。
 # 之前是按 power.limit 的 50/80% 比例（350W 墙 ⇒ 175/280），改绝对值后 limit 只进缓存、不参与判定。
 GW_WARN, GW_ERR = 100.0, 300.0
+# strata_ctx 的着色按已用 context 的“K tokens”刻度（value = n_prompt_tokens/1024，满窗 512K ⇒ 面板 gauge
+# max 填 512）：用户 11-12 16:1x 指定 320 以下绿、320–440 橙、>440 红。440K 正对着客户端 448K 的工作窗口，
+# 320K=62.5% 满窗是“开始值得注意”的位置。恰好 320 绿、恰好 440 橙。
+CTX_WARN_KB, CTX_ERR_KB = 320.0, 440.0
 
 
 def discover():
@@ -147,17 +153,21 @@ def main():
             prefill = None
 
     # context fill %
-    fill = None
+    fill = None; used = ctxmax = 0
     for slot in (slots or []):
         if slot.get("id") == 0:
             nc = slot.get("n_ctx") or 0
             np = slot.get("n_prompt_tokens") or 0
             if nc:
                 fill = round(np / nc * 100, 1)
+                used, ctxmax = np, nc
             break
     if fill is not None:
-        push("strata_ctx", {"value": fill, "unit": "%", "progress": fill, "ttl": 60,
-                            "level": "error" if fill >= 90 else ("warn" if fill >= 75 else "ok")})
+        kb = round(used / 1024.0, 1)           # 值改成 K tokens 刻度（面板 gauge max=512）；百分比留进 progress/sub
+        push("strata_ctx", {"value": kb, "unit": "KB", "progress": fill, "ttl": 20,
+                            "sub": f"{fill}% · {used:,} / {ctxmax:,} tokens",
+                            "level": "error" if kb > CTX_ERR_KB else
+                                     ("warn" if kb > CTX_WARN_KB else "ok")})
 
     # model state: raw live fields + health.loaded 兜底，控件自己复刻引擎 Monitor 的文案与点亮逻辑
     health = get_json(f"{base}/health", api)
