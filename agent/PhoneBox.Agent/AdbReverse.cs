@@ -120,6 +120,10 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         devices = devices.Where(s => string.IsNullOrEmpty(serial) || s == serial).ToArray();
 
         SetDevices(devices);
+        // _seen shrinks with the list here, before the empty-list return below: after an unplug the
+        // phone must count as "not yet woken by this process" again, or the reconnect wake further
+        // down is skipped while the adb server silently re-applies its cached reverse rules.
+        _seen.IntersectWith(devices);
         var problem = UsbProblem;
         if (problem != _lastProblem)
         {
@@ -188,7 +192,6 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         }
         else _awakeSet.Clear();
         _awakeSet.IntersectWith(devices.Select(d => $"{d}:{stayOn}"));
-        _seen.IntersectWith(devices);
         Report($"phone connected: {Devices}");
     }
 
