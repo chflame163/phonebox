@@ -1,0 +1,17 @@
+[Unit]
+Description=PhoneBox panel: release keep-awake lock on shutdown (phone screen sleeps once ErP cuts USB power)
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=sysinit.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Environment=HOME=/home/cc
+ExecStart=/bin/true
+ExecStop=/home/cc/bin/pb-sleep.sh
+
+[Install]
+WantedBy=multi-user.target

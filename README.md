@@ -65,14 +65,22 @@ wakes on the **enumeration event** instead.
   4. Battery edges ride `ACTION_BATTERY_CHANGED`, and `STATUS=CHARGING|FULL` counts as
      plugged even when `EXTRA_PLUGGED` misreads 0 at 100 % on some HALs.
 - **Ops scripts** (deployed as systemd user timers, archived in the repo):
-  `tools/panel-metrics/` feeds the panel from the Strata inference engine: `pb_strata_push.py` runs on a
-  **1 s** systemd user timer, auto-discovers whichever instance owns port 8080 (its `--config` json for the
+  `tools/panel-metrics/` feeds the panel from the Strata inference engine: `pb_strata_push.py` runs resident (`pb-strata-pushd.service`, one push per second; the old
+  1 s oneshot+timer pair is archived beside it as the rollback), auto-discovers whichever instance owns port 8080 (its `--config` json for the
   `api_key`, `--port`), and pushes `strata_state`, `strata_tps`, `strata_prefill`, `strata_ctx`, `gpu_power`
   and `vram_gb`. Every payload carries the `level` field that colors the built-in Pushed value widget, with
   the thresholds kept as plain constants at the top of the file - `gpu_power` by absolute watts (100 / 300),
   `vram_gb` by MiB left free (2000 / 500), `strata_ctx` by K tokens in use (320 / 440) - because this engine
   parks at ~96 % VRAM and ~330 W by design, so share-of-limit thresholds would read red all day.
-  `nvidia-smi` is served from a 5 s cache, so a 1 s tick never waits on the GPU lock.
+  GPU numbers ride the agent's own resident `nvidia-smi -lms 1000` stream through loopback
+  `/api/state` (the script forks nothing; the nvidia-smi + 5 s cache path only serves as the
+  fallback when the agent is down). Pushed values reach the phone inside the 1 Hz state frame
+  (`pushItems`, see TESTLOG-push-stream-20261113.md) - no version-bump re-GET anymore.
+  `tools/power-standby/systemd/` mirrors the desk's boot chain: `phonebox-sleep.service` sleeps
+  the panel on shutdown, `phonebox-wake.service` wakes it after boot (both as executed live,
+  `pb-sleep.sh` / `pb-wake.sh` included), and `tools/power-standby/bootcheck/pb_bootcheck.sh`
+  (+ service) captures boot evidence at +120 s / +300 s with the phone-log windows spooled
+  DURING the event. config.default now ships powerStandby on with a 5 s grace.
   `strata_model_state_html_widget.html` is the Custom HTML widget that reproduces the engine's own
   *Model state* card: six pills (idle / unloaded / reading / generating / queued / error) that dim to
   `opacity .38` rather than turning grey, the engine's exact wording (`98,304 / 141,037 tokens · 70%`,

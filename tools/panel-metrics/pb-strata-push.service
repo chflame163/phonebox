@@ -1,0 +1,6 @@
+[Unit]
+Description=Push Strata decode speed + context fill to PhoneBox panel
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/bin/pb_strata_push.py

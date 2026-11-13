@@ -1,0 +1,428 @@
+{
+  "codexBar": {
+    "providers": [
+      "claude",
+      "codex",
+      "antigravity"
+    ],
+    "rotate": true,
+    "pageSize": 2,
+    "rotateInterval": 8
+  },
+  "controls": {
+    "allowListening": false,
+    "allowPower": false,
+    "actions": [],
+    "profiles": []
+  },
+  "weather": {
+    "city": "Beijing",
+    "lat": 39.89,
+    "lon": 116.84
+  },
+  "night": {
+    "enabled": true,
+    "start": "00:30",
+    "end": "07:30",
+    "brightness": 0.02
+  },
+  "display": {
+    "showSeconds": true,
+    "idleReturnSec": 90,
+    "vibrate": true,
+    "volumeKeys": true,
+    "orientation": "landscape",
+    "theme": "default",
+    "accent": "#2dd4bf",
+    "artTint": true,
+    "autoBrightness": false,
+    "nightWhenDark": false,
+    "proximityWake": true,
+    "pin": false,
+    "homeScreen": true,
+    "keepAwake": true,
+    "followComputerLock": false,
+    "switchCountdownSec": 3,
+    "touchGraceSec": 20,
+    "minDwellSec": 15,
+    "holdMaxMin": 30
+  },
+  "lan": {
+    "enabled": true,
+    "port": 8766,
+    "token": "<REDACTED-lan.token>",
+    "webhookToken": "<REDACTED-lan.webhookToken>"
+  },
+  "updates": {
+    "auto": false,
+    "repo": "ersinkoc/phonebox"
+  },
+  "claude": {
+    "phoneApprovals": true,
+    "timeoutSec": 90,
+    "onlyWhenAway": false
+  },
+  "pages": [
+    {
+      "id": "home",
+      "title": "Home",
+      "icon": "🏠",
+      "enabled": true,
+      "widgets": [
+        {
+          "id": "push",
+          "type": "push",
+          "x": 10,
+          "y": 2,
+          "w": 2,
+          "h": 1,
+          "options": {
+            "key": "strata_tps",
+            "title": "Decode",
+            "unit": "tok/s",
+            "style": "big"
+          }
+        },
+        {
+          "id": "push-2",
+          "type": "push",
+          "x": 10,
+          "y": 3,
+          "w": 2,
+          "h": 1,
+          "options": {
+            "key": "strata_prefill",
+            "title": "Prefill",
+            "unit": "t/s",
+            "style": "big"
+          }
+        },
+        {
+          "id": "push-3",
+          "type": "push",
+          "x": 8,
+          "y": 2,
+          "w": 2,
+          "h": 2,
+          "options": {
+            "key": "strata_ctx",
+            "title": "Context",
+            "unit": "KB",
+            "style": "gauge",
+            "min": 0,
+            "max": 512
+          }
+        },
+        {
+          "id": "push-5",
+          "type": "push",
+          "x": 3,
+          "y": 0,
+          "w": 3,
+          "h": 4,
+          "options": {
+            "key": "gpu_power",
+            "title": "GPU Power",
+            "unit": "W",
+            "style": "gauge",
+            "max": 350
+          }
+        },
+        {
+          "id": "stat",
+          "type": "stat",
+          "x": 0,
+          "y": 4,
+          "w": 3,
+          "h": 2,
+          "options": {
+            "metric": "cpu"
+          }
+        },
+        {
+          "id": "stat-2",
+          "type": "stat",
+          "x": 3,
+          "y": 4,
+          "w": 3,
+          "h": 2,
+          "options": {
+            "metric": "gpu"
+          }
+        },
+        {
+          "id": "stat-3",
+          "type": "stat",
+          "x": 6,
+          "y": 4,
+          "w": 3,
+          "h": 2,
+          "options": {
+            "metric": "ram"
+          }
+        },
+        {
+          "id": "stat-4",
+          "type": "stat",
+          "x": 9,
+          "y": 4,
+          "w": 3,
+          "h": 2,
+          "options": {
+            "metric": "net"
+          }
+        },
+        {
+          "id": "topprocs",
+          "type": "topprocs",
+          "x": 0,
+          "y": 0,
+          "w": 3,
+          "h": 4,
+          "options": {
+            "sort": "cpu"
+          }
+        },
+        {
+          "id": "html",
+          "type": "html",
+          "x": 6,
+          "y": 0,
+          "w": 6,
+          "h": 2,
+          "options": {
+            "html": "<!-- Strata \"Model state\" — PhoneBox Custom HTML widget (6x2).\n     1:1 移植自 Strata serve/web：index.html 的 .state-card + components.css 的 .st-badge/.st-progress\n     + app.css 的 .badges opacity 规则 + app.js renderMonitor() 的 label/detail/pct 逻辑。\n     卡片外框（背景/边框/圆角）由 PhoneBox 的 .w-html.card 提供，这里只画内容。\n     数据：push key `strata_state`，payload 见 pb_strata_push.py 注释。 -->\n<style>\n:root{\n  /* Strata dark-theme tokens（tokens.css [data-theme=dark] 原值；中性色改成 PhoneBox 卡上的 rgba 等效） */\n  --ms-info:#3aa9ff;      --ms-info-tint:rgba(58,169,255,.12);   --ms-info-text:#7cc4ff;\n  --ms-accent:#34d399;    --ms-accent-tint:rgba(52,211,153,.12); --ms-accent-text:#4ade80;\n  --ms-warn:#f5b53d;      --ms-warn-tint:rgba(245,181,61,.12);   --ms-warn-text:#f8c96a;\n  --ms-danger:#ff5a6e;    --ms-danger-tint:rgba(255,90,110,.12); --ms-danger-text:#ff8a98;\n  --ms-ink:#eef1f3;       --ms-ink-muted:#8e979f;\n  --ms-surface-2:rgba(255,255,255,.07);   /* = --st-surface-2 */\n  --ms-line:rgba(255,255,255,.10);        /* = --st-line    */\n  --ms-line-soft:rgba(255,255,255,.06);   /* = --st-line-soft */\n  --ms-ease:cubic-bezier(.2,.7,.2,1);\n}\n.ms{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:.75em;\n    padding:1.1em 1.4em;box-sizing:border-box;overflow:hidden;\n    color:var(--ms-ink);font-size:15px;font-variant-numeric:tabular-nums;\n    font-synthesis:none;-webkit-font-smoothing:antialiased}\n.ms>*,.ms{min-width:0}\n.ms__head{display:flex;align-items:center;gap:.75em;flex-wrap:wrap;flex:none}\n.ms__title{font-weight:700;font-size:1.2em;line-height:1.15;letter-spacing:.005em;color:var(--ms-ink);white-space:nowrap}\n.ms__badges{display:flex;gap:.5em;flex-wrap:wrap;min-width:0}\n.ms__badge{display:inline-flex;align-items:center;gap:.5em;height:2em;padding:0 .83em;flex:none;\n  border-radius:9999px;font-size:.95em;font-weight:700;line-height:1;white-space:nowrap;\n  background:var(--ms-surface-2);color:var(--ms-ink-muted);border:1px solid var(--ms-line);\n  opacity:.38;transition:opacity 160ms var(--ms-ease)}\n.ms__badge::before{content:\"\";width:.62em;height:.62em;border-radius:50%;background:currentColor;flex:none}\n.ms__badge[data-s=\"reading\"]{background:var(--ms-info-tint);color:var(--ms-info-text);border-color:transparent}\n.ms__badge[data-s=\"generating\"]{background:var(--ms-accent-tint);color:var(--ms-accent-text);border-color:transparent}\n.ms__badge[data-s=\"queued\"]{background:var(--ms-warn-tint);color:var(--ms-warn-text);border-color:transparent}\n.ms__badge[data-s=\"error\"]{background:var(--ms-danger-tint);color:var(--ms-danger-text);border-color:transparent}\n.ms__badge.on{opacity:1}\n.ms__row{display:flex;justify-content:space-between;align-items:baseline;gap:1em;font-size:1em;font-weight:500;line-height:1.25;flex:none;min-width:0}\n.ms__row .muted{color:var(--ms-ink-muted);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.ms__prog{position:relative;height:.62em;border-radius:9999px;background:var(--ms-surface-2);border:1px solid var(--ms-line-soft);overflow:hidden;flex:none}\n.ms__bar{height:100%;border-radius:inherit;background:var(--ms-accent);transition:width 160ms var(--ms-ease)}\n.ms__prog[data-tone=\"info\"] .ms__bar{background:var(--ms-info)}\n/* 没有可靠分母时的“进行中”显示：整条 32% 淡底 + 一块扫光（Strata React 版 Monitor 的 indeterminate 思路） */\n.ms__bar--indet{width:100% !important;opacity:.32}   /* 元素上有条内联 width:0%，这里必须 !important 才能铺出淡底 */\n.ms__prog--indet::after{content:\"\";position:absolute;top:0;bottom:0;left:0;width:24%;border-radius:9999px;\n  background:var(--ms-accent);animation:ms-sweep 1.5s var(--ms-ease) infinite alternate}\n.ms__prog[data-tone=\"info\"].ms__prog--indet::after{background:var(--ms-info)}\n@keyframes ms-sweep{0%{transform:translateX(-30%)}100%{transform:translateX(330%)}}\n@media (prefers-reduced-motion:reduce){.ms__prog--indet::after{animation:none;left:auto;right:0;width:38%}}\n.ms__prog[data-tone=\"warn\"] .ms__bar{background:var(--ms-warn)}\n.ms__prog[data-tone=\"danger\"] .ms__bar{background:var(--ms-danger)}\n</style>\n\n<div class=\"ms\" id=\"ms\">\n  <div class=\"ms__head\" id=\"ms-head\">\n    <span class=\"ms__title\">Model state</span>\n    <span class=\"ms__badges\" id=\"ms-badges\">\n      <span class=\"ms__badge\" data-s=\"idle\">Idle</span>\n      <span class=\"ms__badge\" data-s=\"unloaded\">Unloaded</span>\n      <span class=\"ms__badge\" data-s=\"reading\">Reading</span>\n      <span class=\"ms__badge\" data-s=\"generating\">Generating</span>\n      <span class=\"ms__badge\" data-s=\"queued\">Queued</span>\n      <span class=\"ms__badge\" data-s=\"error\">Error</span>\n    </span>\n  </div>\n  <div class=\"ms__row\"><span id=\"ms-label\">Waiting for a request</span><span class=\"muted\" id=\"ms-detail\">–</span></div>\n  <div class=\"ms__prog\" id=\"ms-prog\"><div class=\"ms__bar\" id=\"ms-bar\" style=\"width:0%\"></div></div>\n</div>\n\n<script>\n(function () {\n  var KEY = \"strata_state\";\n  var root = document.getElementById(\"ms\"),\n      head = document.getElementById(\"ms-head\"),\n      badges = document.getElementById(\"ms-badges\"),\n      labelEl = document.getElementById(\"ms-label\"),\n      detailEl = document.getElementById(\"ms-detail\"),\n      progEl = document.getElementById(\"ms-prog\"),\n      barEl = document.getElementById(\"ms-bar\");\n\n  // app.js 第 9 行的 fmt：空值显示 en dash，数字千分位\n  function fmt(n, d) {\n    d = d || 0;\n    if (n === null || n === undefined || n === \"\" || Number.isNaN(+n)) return \"–\";\n    return Number(n).toLocaleString(\"en-US\", { maximumFractionDigits: d, minimumFractionDigits: d });\n  }\n\n  var lastData = null;\n\n  function render(item) {\n    var d = item && typeof item === \"object\" && \"data\" in item ? item.data : item;\n    if (d && typeof d === \"object\") lastData = d;\n    if (!d || typeof d !== \"object\") {          // 没有数据（ttl 过期 / 引擎没起）：全淡、Idle 不亮\n      paint(null, null, \"\", 0, null);\n      return;\n    }\n    var state = d.state || d.raw_state || null;\n    var lit = +d.queued > 0 ? \"queued\" : state;      // app.js: on = queued>0 ? \"queued\" : live.state\n    // app.js: lit = (b.dataset.s === on || b.dataset.s === live.state)\n    Array.prototype.forEach.call(badges.children, function (b) {\n      var s = b.getAttribute(\"data-s\");\n      b.classList.toggle(\"on\", s === lit || s === state);\n    });\n\n    var label = \"Waiting for a request\", detail = \"\", pct = 0, tone = null, indet = false;\n    if (state === \"reading\") {\n      label = \"Reading prompt\"; tone = \"info\";\n      if (+d.prompt_total) {                     // 引擎原样：read / total tokens · N%\n        pct = (100 * +d.prompt_read) / +d.prompt_total;\n        detail = fmt(d.prompt_read) + \" / \" + fmt(d.prompt_total) + \" tokens · \" + fmt(pct) + \"%\";\n      } else {                                   // prompt 不足一个 prefill chunk → 引擎也不报进度\n        detail = fmt(d.prompt_tokens) + \" tokens\"; indet = true;\n      }\n    } else if (state === \"generating\") {\n      label = d.phase ? String(d.phase).charAt(0).toUpperCase() + String(d.phase).slice(1) : \"Generating\";\n      detail = fmt(d.generated) + \" tokens · \" + fmt(d.tok_s, 1) + \" tok/s\";\n      var est = +d.out_est || 0, cap = +d.max_tokens || 0;   // 分母见下面的优先级\n      if (est > 0) pct = Math.min(100, (100 * +d.generated) / est);        // ① 最近请求输出中位数（面板才会真的走）\n      else if (cap > 0 && cap <= 1024) pct = Math.min(100, (100 * +d.generated) / cap);  // ② 客户端给了小上限=真上限\n      else indet = true;                                                    // ③ 没得估 → 扫动\n    } else if (state === \"unloaded\") {\n      label = \"Unloaded\"; detail = \"Load brings it back. A message does too.\";\n    } else if (d.last_detail) {\n      detail = String(d.last_detail);            // idle：引擎的 \"last: N tokens at X tok/s\"\n    }\n    paint(state, label, detail, pct, tone, indet);\n  }\n\n  function paint(state, label, detail, pct, tone, indet) {\n    labelEl.textContent = label || \"Waiting for a request\";\n    detailEl.textContent = detail || \"–\";\n    if (tone) progEl.setAttribute(\"data-tone\", tone); else progEl.removeAttribute(\"data-tone\");\n    var p = +pct; if (!isFinite(p) || p < 0) p = 0; if (p > 100) p = 100;\n    barEl.classList.toggle(\"ms__bar--indet\", !!indet);   // 无分母时：淡底+扫光，别停在 0% 看着像坏了\n    progEl.classList.toggle(\"ms__prog--indet\", !!indet);\n    if (!indet) barEl.style.width = p + \"%\";\n    fit();\n  }\n\n  // 6x2 的卡很小，字号自适应：先从大到小找能一行放下 6 个徽章的字号；放不下就退而求其次，\n  // 用“换行但不溢出”的最大字号（可读性优先）；还不够就压间距再来一遍。\n  var hi = 17, lo = 7, cache = \"\";\n  function ok(f, tight) {\n    root.style.fontSize = f + \"px\";\n    root.style.gap = tight ? \"0.45em\" : \"\";\n    return root.scrollHeight <= root.clientHeight + 1;\n  }\n  function singleLine() {\n    var b = badges.firstElementChild ? badges.firstElementChild.getBoundingClientRect().height : 0;\n    return head.getBoundingClientRect().height <= b * 1.6 + 1;\n  }\n  function fit() {\n    var key = root.clientWidth + \"x\" + root.clientHeight;\n    if (key === cache && root.scrollHeight <= root.clientHeight + 1) { return; }   // 卡片尺寸没变就不重排\n    cache = key;\n    var f, FS_MIN_SINGLE = 11;   // 只有单行还能保持 11px 以上才追求原图那种一行排版\n    for (f = hi; f >= Math.max(lo, FS_MIN_SINGLE); f -= 0.5) { if (ok(f, false) && singleLine()) { root.dataset.fs = f; return; } }\n    for (var tight = 0; tight < 2; tight++) {\n      for (f = hi; f >= lo; f -= 0.5) { if (ok(f, tight === 1)) { root.dataset.fs = f; return; } }\n    }\n    ok(lo, true); root.dataset.fs = lo;\n  }\n\n  root.__msRender = render;                              // 离线验证钩子（宿主可直接喂一条 push 数据）\n\n  if (window.phonebox && window.phonebox.on) {           // 真机：PhoneBox 沙箱\n    window.phonebox.on(\"push\", function (items) { render(items && items[KEY]); });\n  } else {                                               // 预览/自测：模拟宿主 postMessage\n    window.addEventListener(\"message\", function (e) {\n      var m = e.data;\n      if (m && m.phonebox === \"data\" && m.kind === \"push\") render(m.value && m.value[KEY]);\n    });\n  }\n  window.addEventListener(\"resize\", fit);\n  fit();\n})();\n</script>\n",
+            "transparent": false
+          }
+        },
+        {
+          "id": "push-4",
+          "type": "push",
+          "x": 6,
+          "y": 2,
+          "w": 2,
+          "h": 2,
+          "options": {
+            "key": "vram_gb",
+            "title": "VRAM",
+            "style": "gauge",
+            "unit": "GB",
+            "min": 0,
+            "max": 24
+          }
+        }
+      ]
+    },
+    {
+      "id": "system",
+      "title": "System Monitor",
+      "icon": "📊",
+      "enabled": true,
+      "widgets": [
+        {
+          "id": "chart",
+          "type": "chart",
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 3,
+          "options": {
+            "metrics": [
+              "cpu"
+            ]
+          }
+        },
+        {
+          "id": "chart-2",
+          "type": "chart",
+          "x": 6,
+          "y": 0,
+          "w": 6,
+          "h": 3,
+          "options": {
+            "metrics": [
+              "gpu"
+            ]
+          }
+        },
+        {
+          "id": "meters",
+          "type": "meters",
+          "x": 0,
+          "y": 3,
+          "w": 6,
+          "h": 3
+        },
+        {
+          "id": "chart-3",
+          "type": "chart",
+          "x": 6,
+          "y": 3,
+          "w": 6,
+          "h": 3,
+          "options": {
+            "metrics": [
+              "down",
+              "up"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "procs",
+      "title": "Calendar and Weather",
+      "icon": "🏠",
+      "enabled": true,
+      "widgets": [
+        {
+          "id": "forecast",
+          "type": "forecast",
+          "x": 9,
+          "y": 0,
+          "w": 3,
+          "h": 6,
+          "options": {
+            "mode": "hourly"
+          }
+        },
+        {
+          "id": "clock",
+          "type": "clock",
+          "x": 4,
+          "y": 0,
+          "w": 5,
+          "h": 4,
+          "options": {
+            "status": true,
+            "weather": true,
+            "date": true
+          }
+        },
+        {
+          "id": "calendar",
+          "type": "calendar",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 6,
+          "options": {}
+        },
+        {
+          "id": "air",
+          "type": "air",
+          "x": 4,
+          "y": 4,
+          "w": 5,
+          "h": 2,
+          "options": {}
+        }
+      ]
+    }
+  ],
+  "shortcuts": [
+    {
+      "id": "terminal",
+      "label": "Terminal",
+      "icon": "⌨️",
+      "color": "#4b5563",
+      "cmd": "x-terminal-emulator",
+      "toggle": false
+    },
+    {
+      "id": "files",
+      "label": "Files",
+      "icon": "📁",
+      "color": "#e5b84b",
+      "cmd": "xdg-open",
+      "args": "~",
+      "toggle": false
+    },
+    {
+      "id": "vscode",
+      "label": "VS Code",
+      "icon": "📝",
+      "color": "#2f80ed",
+      "cmd": "code",
+      "toggle": false
+    },
+    {
+      "id": "browser",
+      "label": "Browser",
+      "icon": "🌐",
+      "color": "#0ea5e9",
+      "cmd": "https://github.com",
+      "toggle": false
+    },
+    {
+      "id": "spotify",
+      "label": "Spotify",
+      "icon": "🎧",
+      "color": "#1db954",
+      "cmd": "spotify",
+      "toggle": false
+    },
+    {
+      "id": "calc",
+      "label": "Calculator",
+      "icon": "🧮",
+      "color": "#64748b",
+      "cmd": "gnome-calculator",
+      "toggle": false
+    },
+    {
+      "id": "settings",
+      "label": "Settings",
+      "icon": "⚙️",
+      "color": "#94a3b8",
+      "cmd": "gnome-control-center",
+      "toggle": false
+    },
+    {
+      "id": "monitor",
+      "label": "System Monitor",
+      "icon": "📊",
+      "color": "#22c55e",
+      "cmd": "gnome-system-monitor",
+      "toggle": false
+    },
+    {
+      "id": "mute",
+      "label": "Mute",
+      "icon": "🔇",
+      "color": "#f59e0b",
+      "cmd": "builtin:mute",
+      "toggle": false
+    },
+    {
+      "id": "monitoroff",
+      "label": "Screen Off",
+      "icon": "🌙",
+      "color": "#6366f1",
+      "cmd": "builtin:monitor-off",
+      "toggle": false
+    },
+    {
+      "id": "lock",
+      "label": "Lock",
+      "icon": "🔒",
+      "color": "#ef4444",
+      "cmd": "builtin:lock",
+      "toggle": false
+    }
+  ],
+  "rules": [],
+  "charge": {
+    "enabled": false,
+    "min": 50,
+    "max": 80,
+    "method": "ha"
+  },
+  "phones": [],
+  "calendars": [],
+  "homeAssistant": {},
+  "obs": {
+    "enabled": false,
+    "url": "ws://127.0.0.1:4455"
+  }
+}
