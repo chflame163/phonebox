@@ -17,7 +17,7 @@ android {
         applicationId = "net.oxog.phonebox.deskpanel"
         minSdk = 28
         targetSdk = 35
-        versionCode = 27
+        versionCode = 28
         versionName = "0.9.3"
     }
 

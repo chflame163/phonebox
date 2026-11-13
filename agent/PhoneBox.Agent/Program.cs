@@ -318,6 +318,9 @@ object State(IServiceProvider sp, long? ev)
         host = Environment.MachineName,
         cfgVersion = sp.GetRequiredService<ConfigStore>().Version,
         pushVersion = push.Version,
+        // the values ride the frame next to their version - the phone applies them in place instead of paying a
+        // second GET per change (fork 2026-11); the snapshot is the exact shape of GET /api/push's items
+        pushItems = push.Snapshot(),
         evSeq = push.Seq,
         events = ev is { } since ? push.Since(since) : [],
         pc = sp.GetRequiredService<SystemMonitor>().Snapshot(),

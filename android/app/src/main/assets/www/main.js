@@ -1340,7 +1340,13 @@ export function applyState(s) {
   media = s.media ? { ...s.media, at: performance.now() } : null;
   setOnline(true);
   if (s.cfgVersion !== undefined && cfgVersion !== null && s.cfgVersion !== cfgVersion) loadConfig();
-  if (s.pushVersion !== undefined && s.pushVersion !== pushVersion) loadPush();
+  // fork: an agent that ships the pushed values inside the frame gets them applied right there -
+  // widgets re-read D.push on their own every second, so only a version move needs a re-announce.
+  // Frames without items (stock agents) keep the classic version-compare refetch, so agent and app
+  // may be old or new in any combination.
+  if (s.pushItems && s.pushVersion !== pushVersion) { D.push = s.pushItems; pushVersion = s.pushVersion; emit('push'); }
+  else if (s.pushItems) D.push = s.pushItems;
+  else if (s.pushVersion !== undefined && s.pushVersion !== pushVersion) loadPush();
   if (evSeq != null) for (const e of s.events || []) if (e.seq > evSeq) handleEvent(e);
   evSeq = Math.max(evSeq ?? 0, s.evSeq ?? 0);
   // the "back" event can be missed while offline; the list of active rules settles it
