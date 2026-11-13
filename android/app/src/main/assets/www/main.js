@@ -1276,7 +1276,7 @@ export function applyDisplay() {
   try { bridge.setOrientation && bridge.setOrientation(['portrait', 'auto'].includes(d.orientation) ? d.orientation : 'landscape'); } catch (_) {}
   try { bridge.setHomeScreen && bridge.setHomeScreen(d.homeScreen === true); } catch (_) {}
   // standby is opt-in: an absent or older agent leaves the stock behaviour alone
-  try { bridge.setStandby && bridge.setStandby(d.standby || 'off', +(d.standbyGraceSec ?? 30)); } catch (_) {}
+  try { bridge.setStandby && bridge.setStandby(d.standby || 'off', +(d.standbyGraceSec ?? 30), +(d.standbyDeepSec ?? 0)); } catch (_) {}
   applyBrightness(true);
 }
 

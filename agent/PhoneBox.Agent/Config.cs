@@ -105,6 +105,11 @@ public sealed class DisplayConfig
     /// <summary>Seconds the computer may be absent before the hold is released. Debounces a host reboot and a
     /// network hiccup; the system's own screen-off timeout is what actually sleeps the display.</summary>
     public int StandbyGraceSec { get; set; } = 30;
+    /// <summary>Deep standby: seconds the display must stay dark with the computer already gone before the
+    /// panel also pauses the WebView page and stops the live-stream reconnect loop - the two things that keep
+    /// waking the CPU while nobody is at the desk (measured: screen-off discharge 68 mA -> 27 mA, and doze
+    /// becomes reachable). 0 = off, the default.</summary>
+    public int StandbyDeepSec { get; set; } = 0;
     /// <summary>landscape, portrait or auto (follow the phone). In portrait the widgets are arranged automatically.</summary>
     public string Orientation { get; set; } = "landscape";
     /// <summary>default, amoled, midnight, warm or graphite.</summary>
@@ -433,6 +438,7 @@ public sealed partial class ConfigStore(string path)
         c.Display.HomePage = string.IsNullOrWhiteSpace(c.Display.HomePage) ? null : c.Display.HomePage.Trim();
         c.Display.Standby = c.Display.Standby?.Trim().ToLowerInvariant() switch { "power" => "power", "data" => "data", _ => "off" };
         c.Display.StandbyGraceSec = Math.Clamp(c.Display.StandbyGraceSec, 3, 600);
+        c.Display.StandbyDeepSec = Math.Clamp(c.Display.StandbyDeepSec, 0, 7200);
         c.Lan ??= new();
         c.Updates ??= new();
         c.Claude ??= new();

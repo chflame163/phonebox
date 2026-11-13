@@ -460,6 +460,9 @@ dd { margin: 0; word-break: break-all; }
         <div class="field" style="max-width:170px"><label>Standby grace (s)</label>
           <input type="number" data-bind="display.standbyGraceSec" data-type="int" min="3" max="600" step="1">
           <span class="hint">Absorbs a reboot or a network hiccup.</span></div>
+        <div class="field" style="max-width:190px"><label>Deep standby (s)</label>
+          <input type="number" data-bind="display.standbyDeepSec" min="0" max="7200" step="30">
+          <span class="hint">0 = off. After the screen has been dark this long with the computer gone, the panel pauses the page and the live stream too - measured screen-off drain drops about 60% and the phone reaches doze. 300 suits a desk with real nights; any touch, plug-in or agent wake brings it back instantly.</span></div>
         <label class="check"><input type="checkbox" data-bind="display.showSeconds"> Show seconds on the clock</label>
         <label class="check"><input type="checkbox" data-bind="display.vibrate"> Vibrate when a session finishes or needs input</label>
         <label class="check"><input type="checkbox" data-bind="display.volumeKeys"> The phone's volume keys switch pages</label>
