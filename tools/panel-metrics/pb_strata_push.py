@@ -67,7 +67,7 @@ def discover():
 def get_json(url, api):
     try:
         r = urllib.request.Request(url, headers={"Authorization": f"Bearer {api}"})
-        return json.load(urllib.request.urlopen(r, timeout=6))
+        return json.load(urllib.request.urlopen(r, timeout=2))
     except Exception:
         return None
 
@@ -77,7 +77,7 @@ def push(key, body):
         r = urllib.request.Request(
             f"{AGENT}/api/push/{key}", data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
-        urllib.request.urlopen(r, timeout=6)
+        urllib.request.urlopen(r, timeout=2)
         return True
     except Exception as e:
         print(f"push {key} failed: {e}")
@@ -85,6 +85,25 @@ def push(key, body):
 
 
 GPU_CACHE = "/tmp/pb_gpu_cache.json"
+
+
+def gpu_stats_agent(timeout=1.0):
+    """(draw, limit, used_mb, total_mb) from the agent's own resident nvidia-smi -lms 1000
+    stream: loopback GET /api/state, fields pc.gpu.power/powerLimit/vramUsed/vramTotal - the
+    same query gpu_stats() used to fork, at true 1 Hz freshness and zero subprocess cost
+    (vram arrives in GB there, converted back to MiB for the old interface). All-None when
+    the agent is not answering; gpu_stats() (nvidia-smi + 5 s cache) then serves as fallback."""
+    try:
+        g = json.load(urllib.request.urlopen(AGENT + "/api/state", timeout=timeout))["pc"]["gpu"]
+        return (round(float(g["power"]), 1), round(float(g["powerLimit"]), 1),
+                int(round(float(g["vramUsed"]) * 1024)), int(round(float(g["vramTotal"]) * 1024)))
+    except Exception:
+        return None, None, None, None
+
+
+def gpu_stats_any():
+    res = gpu_stats_agent()
+    return res if res[0] is not None else gpu_stats()
 
 
 def gpu_stats(max_age=5.0):
@@ -198,7 +217,7 @@ def main():
 
     # GPU power + VRAM（同一次 nvidia-smi 查询）。gpu_power 按 draw/limit 比例着色；
     # vram_pct 按“还剩多少余量”着色：这台 strata 常驻就有 ~88%，所以红线留给真吃紧的 90/95。
-    gw, glimit, vu, vt = gpu_stats()          # glimit 现在只进缓存，不参与着色（阈值见 GW_WARN/GW_ERR）
+    gw, glimit, vu, vt = gpu_stats_any()          # glimit 现在只进缓存，不参与着色（阈值见 GW_WARN/GW_ERR）
     if gw is not None and gw > 0:
         push("gpu_power", {"value": gw, "unit": "W", "ttl": 20,
                            "level": "error" if gw > GW_ERR else
@@ -215,8 +234,26 @@ def main():
                           "level": "error" if free <= VR_ERR_FREE else
                                    ("warn" if free <= VR_WARN_FREE else "ok")})
 
-    print(f"base={base} decode={speed} prefill={prefill} fill={fill} gpu_w={gw} vram={vram_txt}")
+    print(f"base={base} decode={speed} prefill={prefill} fill={fill} gpu_w={gw} vram={vram_txt}", flush=True)
+
+
+def _run_forever():
+    """PB_RESIDENT=1 under a simple systemd unit: one process, one push per second. The
+    oneshot+timer shape never reached 1 s - every round paid a fresh interpreter, its own
+    nvidia-smi, and at boot the 1 s cadence tripped systemd's default start limit
+    (10 s / 5 starts) and dropped whole rounds. Measured effective cadence: 2.2 s."""
+    while True:
+        start = time.time()
+        try:
+            main()
+        except Exception as e:                      # a broken tick must not take the loop down
+            print("tick failed:", e, flush=True)
+        time.sleep(max(0.05, 1.0 - (time.time() - start)))
 
 
 if __name__ == "__main__":
-    main()
+    import os
+    if os.environ.get("PB_RESIDENT"):
+        _run_forever()
+    else:
+        main()

@@ -49,3 +49,26 @@ flapping 就此变得无害）。分析全文见 `C:\work\phonebox\phonebox-push
 - agent 一行：`systemctl --user stop phonebox && find ~/.local/share/PhoneBox/app -maxdepth 1 -mindepth 1 -delete && cp -a /mnt/nvme0n1p1/temp/phonebox-agent-stock093-20261113-215330/. ~/.local/share/PhoneBox/app/ && systemctl --user start phonebox`
 - 手机一行：`adb -s 481fe5dc install -r /mnt/nvme0n1p1/temp/phonebox-deepstandby-20261112-131324/app-release-v27.apk`（vc27 同日线上版）
 - git：本 commit revert 即回源码态（新 phone+老 agent、老 phone+新 agent 都兼容，revert 不必急）。
+
+## 6. R' - 常驻 1s + GPU 数据源切到 agent 自己的 nvidia-smi 流（同夜 22:05 追加，解决 §4 前两条）
+
+起因=用户观察"pushed value 还是 ~5s 一刷"。35s 采样实锤：`gpu_power` 6s 一跳（`max_age=5.0`
+缓存 × 2.2s 轮次量化）、strata 系 2.2s（oneshot+timer 的真实节奏，开机还撞 start-limit-hit 丢轮）。
+
+改动（`pb_push_resident_patch1.py` 六锚点，live+repo 双份、py_compile 过）：
+- 新增 `gpu_stats_agent()`：loopback `GET /api/state` 取 `pc.gpu` 四项（与 nvidia-smi 同一组字段；
+  GB→MiB 折算对齐旧接口），失败回退原 `gpu_stats()`（nvidia-smi+5s 缓存）；main 走 `gpu_stats_any()`。
+  脚本自此 **零 nvidia-smi fork**（agent 那条常驻 `-lms 1000` 流就是数据源）。
+- `get_json`/`push` timeout 6→2；`print(..., flush=True)`（journal 实时逐行）；
+  `_run_forever()` 每秒一轮（tick 异常只打印不杀循环），`PB_RESIDENT=1` 启用。
+- unit：`pb-strata-pushd.service`（Type=simple、After=phonebox.service、Restart=always、已
+  **enable**，WantedBy=default.target）；旧 timer disable 未删=回滚件。
+
+部署验收（22:05-22:06）：journal **每秒一行**；30s 采样 `gpu_power` 换值节奏 **1.07s**、
+`strata_state` **1.03s**；`tps/prefill/ctx` 的 value 变化慢系采样窗引擎空闲（decode 恒 110.8
+数个周期），非传输；`vram_gb` 数值本就稳定。开机侧顺带免费拿到 P0 大部分收益：pushd
+`After=phonebox.service`、agent 就绪即 1s/轮（GPU 键首帧=agent ready+1s，不再等 60s timer；
+strata 键真实下限=引擎加载 ~5min）。§4 前两条就此关闭，只剩 stream flapping 独立案。
+
+回滚一行：`systemctl --user disable --now pb-strata-pushd && systemctl --user enable --now pb-strata-push.timer`
+（脚本无需回退：不设 env 即回单轮模式）。

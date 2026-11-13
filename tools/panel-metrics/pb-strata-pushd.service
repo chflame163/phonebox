@@ -1,0 +1,13 @@
+[Unit]
+Description=Push panel metrics once a second (resident loop; GPU fields ride the agent's own nvidia-smi stream)
+After=phonebox.service
+
+[Service]
+Type=simple
+Environment=PB_RESIDENT=1
+ExecStart=/usr/bin/python3 %h/bin/pb_strata_push.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
