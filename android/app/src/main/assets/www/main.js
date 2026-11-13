@@ -50,7 +50,9 @@ export const DEFAULT_CFG = {
   weather: { city: 'Tallinn', lat: 59.437, lon: 24.745 },
   night: { enabled: true, start: '00:30', end: '07:30', brightness: 0.02 },
   display: { showSeconds: true, idleReturnSec: 90, vibrate: true, volumeKeys: true },
-  // note: powerStandby / powerStandbyDelaySec default to on/30 s in the agent and in MainActivity; absent = on
+  // note: the agent (and config.default) ships powerStandby on with a 5 s grace since 2026-11-13; the JS
+  // fallback of 30 s below covers older agents without the key, and MainActivity's native 30 s only the
+  // cold-start window before the first config push arrives
   pages: FALLBACK_PAGES,
   shortcuts: [],
 };

@@ -120,8 +120,10 @@ public sealed class DisplayConfig
     /// <summary>Power standby (on the phone, no root): when the phone's USB power is cut — the server powered off — the panel
     /// stops holding the screen on so it sleeps at the system timeout; when power returns it wakes and shows the panel again.</summary>
     public bool PowerStandby { get; set; } = true;
-    /// <summary>Grace period in seconds after the power is lost before the screen may sleep; absorbs a rebooting server's power blip.</summary>
-    public int PowerStandbyDelaySec { get; set; } = 30;
+    /// <summary>Grace period in seconds after the computer goes quiet before the screen may sleep. The criterion is
+    /// agent-data silence (12 s), which a live agent never crosses, so a short grace only trims a real
+    /// shutdown a little - 5 s is the desk standard since 2026-11-12 (measured: dark ~30 s after unplug).</summary>
+    public int PowerStandbyDelaySec { get; set; } = 5;
     /// <summary>On macOS, sleep the connected phone when the computer locks; wake it and open PhoneBox after unlock.</summary>
     public bool FollowComputerLock { get; set; }
     /// <summary>The page the panel returns to (idle return, Back); null = the first page.</summary>
