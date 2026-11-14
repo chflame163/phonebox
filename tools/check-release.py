@@ -4,7 +4,8 @@ root=pathlib.Path(__file__).resolve().parents[1]
 version=ET.parse(root/'agent/PhoneBox.Agent/PhoneBox.Agent.csproj').find('.//Version').text
 assert re.fullmatch(r'\d+\.\d+\.\d+',version),version
 gradle=(root/'android/app/build.gradle.kts').read_text()
-assert re.search(r'versionName = "'+re.escape(version)+'"',gradle),'Android version differs'
+# fork: allow a local build suffix like "0.9.4+fork" in versionName
+assert re.search(r'versionName = "'+re.escape(version)+r'(\+[^"]*)?"',gradle),'Android version differs'
 assert int(re.search(r'versionCode = (\d+)',gradle)[1])>0
 changelog=(root/'CHANGELOG.md').read_text(encoding='utf-8')
 assert re.search(r'^## '+re.escape(version)+r' — \d{4}-\d{2}-\d{2}$',changelog,re.M),'Missing dated release notes'
