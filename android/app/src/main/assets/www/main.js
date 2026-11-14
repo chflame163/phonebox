@@ -1417,9 +1417,11 @@ function floorStalePush() {
   }
   D.push = floored;
   D.state = flooredState(s);
-  staleFloorDone = true;
+  D.procs = { groups: [], total: 0, groupCount: 0 }; // vc31: process cards fall back to their "Measuring..." empty state
+  staleFloorDone = true; // floorStalePush_v31
   emit('push');
   emit('state'); // W.stat/W.gauge re-render on 'state'
+  emit('procs'); // W.topprocs/W.processes re-render on 'procs'
 }
 
 // Live stream from the Android shell (see AgentStream.kt); polling below is the fallback when it is not running.

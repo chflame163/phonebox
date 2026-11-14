@@ -77,7 +77,8 @@ wakes on the **enumeration event** instead.
   five seconds without any state frame (stream AND poll dead: hard power loss where no handler ran, or a
   stream flap that swallowed the goodbye) floors the cached values locally and re-announces them - pushed keys
   and the built-in stat cards alike (vc30 also floors `D.state`: pc/ping measures go 0, names and totals
-  survive), so even an unannounced death shows 0 everywhere within 5 s. Proof: `tools/panel-metrics/TESTLOG-stop-floor-20261114.md`;
+  survive) - and the Top CPU list falls back to its own "Measuring..." placeholder (vc31) - so even
+  an unannounced death shows 0 or empty on every card within 5 s. Proof: `tools/panel-metrics/TESTLOG-stop-floor-20261114.md`;
   load-floor four-stage proof and rollback: `tools/panel-metrics/TESTLOG-push-floor-20261114.md`.
 - **Ops scripts** (deployed as systemd user timers, archived in the repo):
   `tools/panel-metrics/` feeds the panel from the Strata inference engine: `pb_strata_push.py` runs resident (`pb-strata-pushd.service`, one push per second; the old

@@ -79,3 +79,19 @@ the temporary `Restart=no` drop-in, +9 s every card reads 0 while pushed keys fl
 
 Still frozen by design: the Top CPU process list (not one of the four cards - it takes one line in the
 same flooredState net if ever wanted).
+
+
+## Layer 5 (same day, third follow-up) - the Top CPU list joins the net: vc30 -> **vc31** (APK `2a30a5aa`)
+
+The process cards (`W.topprocs` in pc.js / `W.processes` in basic.js, both `needs: ['procs']`) carry
+their own empty-state placeholder, so an EMPTY table - not zeroed rows - is their honest floor: the
+silence net now also sets `D.procs = {groups:[], total:0, groupCount:0}` and emits `procs`, rendering
+"Measuring..." (a frozen process list from a dead host would claim knowledge it no longer has).
+No reset code is needed: the 2 s `loadProcs` interval is gated on `online`, so nothing overwrites the
+empty state while the agent is away, and recovery refills it within one interval.
+
+Desk proof `pb_procfloor_retest.sh` (mCurrentFocus asserted at all three captures): kill -9, +9 s the
+whole desk is floor and TOP CPU reads "Measuring..." - `v4_kill9.png` md5 0efc133a (live before
+70d453c8, restored after 9eb45196). vc31 APK archived at
+`/mnt/nvme0n1p1/temp/pb-procfloor-20261114-122413/apk/`. This supersedes layer 4's "still frozen by
+design" note: every card on the home layout now floors within 5 s of the agent going silent.
