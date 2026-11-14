@@ -71,7 +71,13 @@ wakes on the **enumeration event** instead.
   to empty, scalars to 0, `At` re-stamped so phones actually redraw, `ExpiresAt` dropped so the floor
   rides until a real push replaces it - and a pending disk write is never re-armed, so the store
   persists every ~2 s. The panel therefore starts at 0 W / 0 GB / 0 KB / 0 tok/s with Model state idle.
-  Four-stage on-desk proof and rollback: `tools/panel-metrics/TESTLOG-push-floor-20261114.md`.
+  Two more nets so the phone's own RAM never outlives the truth either: at a graceful stop
+  `ApplicationStopping` seals the store, floors every key and holds the process ~1.3 s so the per-second
+  live-stream frame carries the goodbye zeros to the phone; and `main.js` (vc29) watches `lastStateAt` -
+  five seconds without any state frame (stream AND poll dead: hard power loss where no handler ran, or a
+  stream flap that swallowed the goodbye) floors the cached values locally and re-announces them, so even
+  an unannounced death shows 0 within 5 s. Proof: `tools/panel-metrics/TESTLOG-stop-floor-20261114.md`;
+  load-floor four-stage proof and rollback: `tools/panel-metrics/TESTLOG-push-floor-20261114.md`.
 - **Ops scripts** (deployed as systemd user timers, archived in the repo):
   `tools/panel-metrics/` feeds the panel from the Strata inference engine: `pb_strata_push.py` runs resident (`pb-strata-pushd.service`, one push per second; the old
   1 s oneshot+timer pair is archived beside it as the rollback), auto-discovers whichever instance owns port 8080 (its `--config` json for the

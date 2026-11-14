@@ -1248,6 +1248,9 @@ export function tick() {
     if (curPage === homeIndex()) { closeSheet(); closeOverview(); lastNav = Date.now(); } // only a sheet to close
     else { navQueue.push({ kind: 'home', at: Date.now(), priority: -1 }); pump(); }
   }
+  // fork 2026-11: five seconds of total agent silence floors the cached push values (see floorStalePush);
+  // runs even in night mode so the RAM the panel wakes a reboot with is already zeros.
+  if (lastStateAt && Date.now() - lastStateAt > 5000) floorStalePush();
   if (!nightOn) emit('tick');
   setTimeout(tick, 1000 - (Date.now() % 1000) + 5);
 }
@@ -1323,6 +1326,7 @@ export async function loadPush() {
   try {
     const r = await api('/push');
     D.push = r.items || {};
+    staleFloorDone = false; // refetched from a live agent
     pushVersion = r.version;
     emit('push');
   } catch (_) {}
@@ -1346,9 +1350,11 @@ export function applyState(s) {
   // widgets re-read D.push on their own every second, so only a version move needs a re-announce.
   // Frames without items (stock agents) keep the classic version-compare refetch, so agent and app
   // may be old or new in any combination.
-  if (s.pushItems && s.pushVersion !== pushVersion) { D.push = s.pushItems; pushVersion = s.pushVersion; emit('push'); }
-  else if (s.pushItems) D.push = s.pushItems;
-  else if (s.pushVersion !== undefined && s.pushVersion !== pushVersion) loadPush();
+  if (s.pushItems) { D.push = s.pushItems; staleFloorDone = false; } // agent is talking: retire the local floor
+  if (s.pushVersion !== undefined && s.pushVersion !== pushVersion) {
+    if (s.pushItems) { pushVersion = s.pushVersion; emit('push'); }
+    else loadPush(); // stock agents that do not ship items keep the classic version-compare refetch
+  }
   if (evSeq != null) for (const e of s.events || []) if (e.seq > evSeq) handleEvent(e);
   evSeq = Math.max(evSeq ?? 0, s.evSeq ?? 0);
   // the "back" event can be missed while offline; the list of active rules settles it
@@ -1370,6 +1376,34 @@ export function applyState(s) {
     }
   }
   emit('state');
+}
+
+// Fork 2026-11 (floor net): if not a single state frame arrives for five seconds - stream closed AND poll
+// failing, which means the agent died or the PC is off - collapse every cached pushed value to its floor
+// locally: objects become {"value":0} with the unit kept, arrays empty, anything else zero; at is re-stamped
+// so the one-second widgets redraw (they skip the redraw while item.at is unchanged). The agent floors values
+// on load and on a graceful stop (PushStore.Floored / SealAndFloorAll), but neither can run during hard power
+// loss and stream flaps can swallow the goodbye frame - this net cannot. staleFloorDone fires it once per
+// silence episode; a live agent replaces the whole table on its next frame anyway.
+let staleFloorDone = false;
+function floorStalePush() {
+  const items = D.push || {};
+  const keys = Object.keys(items);
+  if (!keys.length || staleFloorDone) return;
+  const floored = {};
+  for (const k of keys) {
+    const d = (items[k] || {}).data;
+    floored[k] = {
+      data: d && typeof d === 'object' && !Array.isArray(d)
+        ? Object.assign({ value: 0 }, d.unit ? { unit: d.unit } : {})
+        : Array.isArray(d) ? [] : 0,
+      at: Date.now(),
+      expiresAt: null,
+    };
+  }
+  D.push = floored;
+  staleFloorDone = true;
+  emit('push');
 }
 
 // Live stream from the Android shell (see AgentStream.kt); polling below is the fallback when it is not running.
