@@ -60,3 +60,22 @@ close that, the second one per user requirement "意外停电时关机钩子不�
 - panel layer: rebuild/revert vc28 (main.js + build.gradle.kts = `git revert` commit2, assembleRelease,
   `install -r -t`); no user data at stake either way.
 - Both: `git revert` the two commits; live artifacts (dll/APK) must be restored regardless.
+
+
+## Layer 4 (later the same day, user follow-up) - the built-in stat cards join the net: vc29 -> **vc30** (APK `4842f32e`)
+
+The four stat cards (CPU / GPU / RAM / NETWORK) are fed by the live frames' `pc`/`ping` blocks, not by
+push values, so the 5 s net left them frozen at the last pre-loss reading. `floorStalePush` now swaps
+`D.state` for a floored copy too - `cpu`/`cpuTemp`, `gpu.util/temp/power/fan/clock/vramUsed`,
+`ramUsedGb`, both net rates and `ping.ms` go 0, while names, totals and limits survive so the cards keep
+their context (`0 / 126 GB`, `↑ 0 B/s · 0 ms`) - and emits `state` because `W.stat`/`W.gauge` re-render
+on that kind. The `staleFloorDone` latch reset moved to the top of `applyState`: any successful frame
+retires the whole silence floor (also fixes the stock-agent path where frames carry no pushItems).
+
+Desk proof `pb_statfloor_retest.sh` (mCurrentFocus asserted before all three captures): kill -9 behind
+the temporary `Restart=no` drop-in, +9 s every card reads 0 while pushed keys floor as before -
+`v3_kill9.png` md5 54e91158 (live before: 52eebf9b, after recovery: 4efc145d). vc30 APK archived at
+`/mnt/nvme0n1p1/temp/pb-statfloor-20261114-121842/apk/PhoneBox-0.9.3-vc30.apk`.
+
+Still frozen by design: the Top CPU process list (not one of the four cards - it takes one line in the
+same flooredState net if ever wanted).

@@ -1342,6 +1342,7 @@ export function setOnline(on) {
 
 export function applyState(s) {
   lastStateAt = Date.now();
+  staleFloorDone = false; // any successful frame retires the silence floor (push values and stat cards alike)
   D.state = s;
   media = s.media ? { ...s.media, at: performance.now() } : null;
   setOnline(true);
@@ -1386,12 +1387,25 @@ export function applyState(s) {
 // loss and stream flaps can swallow the goodbye frame - this net cannot. staleFloorDone fires it once per
 // silence episode; a live agent replaces the whole table on its next frame anyway.
 let staleFloorDone = false;
+// vc30: the net floors D.state too, so the built-in stat cards (CPU/GPU/RAM/NETWORK read pc/ping from the
+// live frames) show 0 % / 0 W / 0 GB / 0 B/s on silence instead of freezing at the last pre-loss reading.
+// Only measured values floor - names, totals and limits survive so the cards keep their context.
+function flooredState(s) {
+  const out = { ...s };
+  if (s.pc) {
+    const pc = { ...s.pc, cpu: 0, cpuTemp: 0, ramUsedGb: 0, netDownBps: 0, netUpBps: 0 };
+    if (s.pc.gpu) pc.gpu = { ...s.pc.gpu, util: 0, temp: 0, power: 0, fan: 0, clock: 0, vramUsed: 0 };
+    out.pc = pc;
+  }
+  if (s.ping) out.ping = { ...s.ping, ms: 0 };
+  return out;
+}
 function floorStalePush() {
+  const s = D.state;
+  if (!s || staleFloorDone) return; // anchored on state: real frames arrived once and then stopped
   const items = D.push || {};
-  const keys = Object.keys(items);
-  if (!keys.length || staleFloorDone) return;
   const floored = {};
-  for (const k of keys) {
+  for (const k of Object.keys(items)) {
     const d = (items[k] || {}).data;
     floored[k] = {
       data: d && typeof d === 'object' && !Array.isArray(d)
@@ -1402,8 +1416,10 @@ function floorStalePush() {
     };
   }
   D.push = floored;
+  D.state = flooredState(s);
   staleFloorDone = true;
   emit('push');
+  emit('state'); // W.stat/W.gauge re-render on 'state'
 }
 
 // Live stream from the Android shell (see AgentStream.kt); polling below is the fallback when it is not running.
