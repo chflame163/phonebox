@@ -1,0 +1,10 @@
+[Unit]
+Description=Run pb-strata-push every 1s (Strata speed/context -> panel)
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=1s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=PhoneBox desk: boot evidence capture (panel wake chain + push freshness, two samples)
+After=phonebox.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/bin/pb_bootcheck.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

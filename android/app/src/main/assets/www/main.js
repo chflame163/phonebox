@@ -28,7 +28,7 @@ export const $ = (id) => document.getElementById(id);
 // The native bridge (window.Android) is in every frame, sandboxed widgets included, so each call carries a key that only
 // the panel's own frames receive (MainActivity.bridgeKey). This wrapper adds it.
 const BRIDGE = ['battery', 'buzz', 'haptic', 'pcs', 'selectPc', 'forgetPc', 'setBrightness', 'setHomeScreen', 'setOrientation',
-  'setPinned', 'setVolumeKeys', 'transport', 'sensors', 'version'];
+  'setPinned', 'setVolumeKeys', 'setPowerStandby', 'transport', 'sensors', 'version'];
 export const bridge = typeof Android === 'undefined' ? null : Object.fromEntries(BRIDGE.filter((m) => typeof Android[m] === 'function')
   .map((m) => [m, (...args) => Android[m](window.__phoneboxKey || '', ...args)]));
 // Live preview inside the agent's layout editor: the layout comes from the editor (unsaved), not from the agent.
@@ -50,6 +50,9 @@ export const DEFAULT_CFG = {
   weather: { city: 'Tallinn', lat: 59.437, lon: 24.745 },
   night: { enabled: true, start: '00:30', end: '07:30', brightness: 0.02 },
   display: { showSeconds: true, idleReturnSec: 90, vibrate: true, volumeKeys: true },
+  // note: the agent (and config.default) ships powerStandby on with a 5 s grace since 2026-11-13; the JS
+  // fallback of 30 s below covers older agents without the key, and MainActivity's native 30 s only the
+  // cold-start window before the first config push arrives
   pages: FALLBACK_PAGES,
   shortcuts: [],
 };
@@ -1255,6 +1258,9 @@ export function tick() {
     if (curPage === homeIndex()) { closeSheet(); closeOverview(); lastNav = Date.now(); } // only a sheet to close
     else { navQueue.push({ kind: 'home', at: Date.now(), priority: -1 }); pump(); }
   }
+  // fork 2026-11: five seconds of total agent silence floors the cached push values (see floorStalePush);
+  // runs even in night mode so the RAM the panel wakes a reboot with is already zeros.
+  if (lastStateAt && Date.now() - lastStateAt > 5000) floorStalePush();
   if (!nightOn) emit('tick');
   setTimeout(tick, 1000 - (Date.now() % 1000) + 5);
 }
@@ -1275,6 +1281,8 @@ export function applyDisplay() {
   try { bridge.setPinned && bridge.setPinned(d.pin === true); } catch (_) {}
   try { bridge.setOrientation && bridge.setOrientation(['portrait', 'auto'].includes(d.orientation) ? d.orientation : 'landscape'); } catch (_) {}
   try { bridge.setHomeScreen && bridge.setHomeScreen(d.homeScreen === true); } catch (_) {}
+  // absent (older agent, or no agent at all) keeps standby on — that is the point of the feature
+  try { bridge.setPowerStandby && bridge.setPowerStandby(d.powerStandby !== false, +(d.powerStandbyDelaySec ?? 30)); } catch (_) {}
   applyBrightness(true);
 }
 
@@ -1328,6 +1336,7 @@ export async function loadPush() {
   try {
     const r = await api('/push');
     D.push = r.items || {};
+    staleFloorDone = false; // refetched from a live agent
     pushVersion = r.version;
     emit('push');
   } catch (_) {}
@@ -1343,11 +1352,20 @@ export function setOnline(on) {
 
 export function applyState(s) {
   lastStateAt = Date.now();
+  staleFloorDone = false; // any successful frame retires the silence floor (push values and stat cards alike)
   D.state = s;
   media = s.media ? { ...s.media, at: performance.now() } : null;
   setOnline(true);
   if (s.cfgVersion !== undefined && cfgVersion !== null && s.cfgVersion !== cfgVersion) loadConfig();
-  if (s.pushVersion !== undefined && s.pushVersion !== pushVersion) loadPush();
+  // fork: an agent that ships the pushed values inside the frame gets them applied right there -
+  // widgets re-read D.push on their own every second, so only a version move needs a re-announce.
+  // Frames without items (stock agents) keep the classic version-compare refetch, so agent and app
+  // may be old or new in any combination.
+  if (s.pushItems) { D.push = s.pushItems; staleFloorDone = false; } // agent is talking: retire the local floor
+  if (s.pushVersion !== undefined && s.pushVersion !== pushVersion) {
+    if (s.pushItems) { pushVersion = s.pushVersion; emit('push'); }
+    else loadPush(); // stock agents that do not ship items keep the classic version-compare refetch
+  }
   if (evSeq != null && s.evSeq != null && s.evSeq < evSeq) evSeq = s.evSeq; // the agent restarted: it counts from 0 again
   if (evSeq != null) for (const e of s.events || []) if (e.seq > evSeq) handleEvent(e);
   evSeq = Math.max(evSeq ?? 0, s.evSeq ?? 0);
@@ -1370,6 +1388,51 @@ export function applyState(s) {
     }
   }
   emit('state');
+}
+
+// Fork 2026-11 (floor net): if not a single state frame arrives for five seconds - stream closed AND poll
+// failing, which means the agent died or the PC is off - collapse every cached pushed value to its floor
+// locally: objects become {"value":0} with the unit kept, arrays empty, anything else zero; at is re-stamped
+// so the one-second widgets redraw (they skip the redraw while item.at is unchanged). The agent floors values
+// on load and on a graceful stop (PushStore.Floored / SealAndFloorAll), but neither can run during hard power
+// loss and stream flaps can swallow the goodbye frame - this net cannot. staleFloorDone fires it once per
+// silence episode; a live agent replaces the whole table on its next frame anyway.
+let staleFloorDone = false;
+// vc30: the net floors D.state too, so the built-in stat cards (CPU/GPU/RAM/NETWORK read pc/ping from the
+// live frames) show 0 % / 0 W / 0 GB / 0 B/s on silence instead of freezing at the last pre-loss reading.
+// Only measured values floor - names, totals and limits survive so the cards keep their context.
+function flooredState(s) {
+  const out = { ...s };
+  if (s.pc) {
+    const pc = { ...s.pc, cpu: 0, cpuTemp: 0, ramUsedGb: 0, netDownBps: 0, netUpBps: 0 };
+    if (s.pc.gpu) pc.gpu = { ...s.pc.gpu, util: 0, temp: 0, power: 0, fan: 0, clock: 0, vramUsed: 0 };
+    out.pc = pc;
+  }
+  if (s.ping) out.ping = { ...s.ping, ms: 0 };
+  return out;
+}
+function floorStalePush() {
+  const s = D.state;
+  if (!s || staleFloorDone) return; // anchored on state: real frames arrived once and then stopped
+  const items = D.push || {};
+  const floored = {};
+  for (const k of Object.keys(items)) {
+    const d = (items[k] || {}).data;
+    floored[k] = {
+      data: d && typeof d === 'object' && !Array.isArray(d)
+        ? Object.assign({ value: 0 }, d.unit ? { unit: d.unit } : {})
+        : Array.isArray(d) ? [] : 0,
+      at: Date.now(),
+      expiresAt: null,
+    };
+  }
+  D.push = floored;
+  D.state = flooredState(s);
+  D.procs = { groups: [], total: 0, groupCount: 0 }; // vc31: process cards fall back to their "Measuring..." empty state
+  staleFloorDone = true; // floorStalePush_v31
+  emit('push');
+  emit('state'); // W.stat/W.gauge re-render on 'state'
+  emit('procs'); // W.topprocs/W.processes re-render on 'procs'
 }
 
 // Live stream from the Android shell (see AgentStream.kt); polling below is the fallback when it is not running.

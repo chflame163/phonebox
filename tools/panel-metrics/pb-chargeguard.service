@@ -1,0 +1,6 @@
+[Unit]
+Description=PhoneBox phone charge ceiling (PMIC charging_enabled, no USB-port switching)
+[Service]
+Type=oneshot
+Environment=PB_PUSH=0
+ExecStart=/home/cc/bin/pb_chargeguard.sh auto

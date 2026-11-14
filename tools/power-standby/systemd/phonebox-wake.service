@@ -1,0 +1,13 @@
+[Unit]
+Description=PhoneBox panel: wake phone, dismiss keyguard, start panel after boot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=HOME=/home/cc
+ExecStart=/home/cc/bin/pb-wake.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

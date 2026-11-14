@@ -38,6 +38,96 @@ the pages in a visual editor on the PC: **113 widgets**, **30 templates**, as ma
 [Updates](#updates) · [How it works](#how-it-works) · [Security](#security--privacy) · [FAQ](#faq--troubleshooting) ·
 [Development](#development)
 
+## Fork changes (chflame163: power-standby suite)
+
+Upstream's power standby asks *"is USB power present?"* to decide whether the computer is on.
+That breaks two common desk setups: a PC port whose *charge* is capped at the PMIC
+(`charging_enabled`) while it still powers and syncs the phone, and `ACTION_POWER_CONNECTED` /
+`ACTION_POWER_DISCONNECTED`, which are implicit broadcasts on Android 8+ and never reach
+upstream's receiver at all. This fork's phone app sleeps when the **agent goes quiet** and
+wakes on the **enumeration event** instead.
+
+- **Phone app** (agent and protocol untouched; tags `power-standby-fix` → `power-standby-data`
+  → `power-standby-fast-wake` → `power-standby-deep-sleep`):
+  1. Standby triggers on agent data freshness (page proxy + live-stream beats, measured with
+     `elapsedRealtime` so clock corrections cannot fake it) or the death of the phone's own USB
+     data link, keeping the original grace delay (`display.powerStandbyDelaySec`). Capping the
+     charge no longer puts the panel to sleep.
+  2. An `ACTION_USB_STATE` receiver reacts to the host's kernel enumeration itself: measured
+     enumeration → panel lit in under 1 s (193 ms of it is the display rising from Dozing);
+     the 15 s poll is fallback only.
+  3. Deep standby: 5 min of dark screen with the host still silent pauses the WebView, stops
+     the SSE reconnect loop and `killBackgroundProcesses()`es the Lineage preload list (the
+     @hide `killAllBackgroundProcesses` is not callable from an app; the public per-package
+     call plus one normal permission is). What stays awake are the two sticky receivers and a
+     wakelock-free 60 s probe - measured screen-off drain **27 mA vs 68 mA** before, and
+     deviceidle now actually reaches light idle.
+  4. Battery edges ride `ACTION_BATTERY_CHANGED`, and `STATUS=CHARGING|FULL` counts as
+     plugged even when `EXTRA_PLUGGED` misreads 0 at 100 % on some HALs.
+- **Cold start sends the floor, not last session's numbers**: restored push values used to be served
+  verbatim from `data.json`, and a 1 s producer re-armed the 2 s persist debounce every tick, so the
+  file never left `{}` (the numbers people saw at boot were the phone app's own pre-shutdown RAM echo).
+  Now `PushStore.Load()` floors every restored key - objects to `{"value":0}` with the unit kept, arrays
+  to empty, scalars to 0, `At` re-stamped so phones actually redraw, `ExpiresAt` dropped so the floor
+  rides until a real push replaces it - and a pending disk write is never re-armed, so the store
+  persists every ~2 s. The panel therefore starts at 0 W / 0 GB / 0 KB / 0 tok/s with Model state idle.
+  Two more nets so the phone's own RAM never outlives the truth either: at a graceful stop
+  `ApplicationStopping` seals the store, floors every key and holds the process ~1.3 s so the per-second
+  live-stream frame carries the goodbye zeros to the phone; and `main.js` (vc29) watches `lastStateAt` -
+  five seconds without any state frame (stream AND poll dead: hard power loss where no handler ran, or a
+  stream flap that swallowed the goodbye) floors the cached values locally and re-announces them - pushed keys
+  and the built-in stat cards alike (vc30 also floors `D.state`: pc/ping measures go 0, names and totals
+  survive) - and the Top CPU list falls back to its own "Measuring..." placeholder (vc31) - so even
+  an unannounced death shows 0 or empty on every card within 5 s. Proof: `tools/panel-metrics/TESTLOG-stop-floor-20261114.md`;
+  load-floor four-stage proof and rollback: `tools/panel-metrics/TESTLOG-push-floor-20261114.md`.
+- **Ops scripts** (deployed as systemd user timers, archived in the repo):
+  `tools/panel-metrics/` feeds the panel from the Strata inference engine: `pb_strata_push.py` runs resident (`pb-strata-pushd.service`, one push per second; the old
+  1 s oneshot+timer pair is archived beside it as the rollback), auto-discovers whichever instance owns port 8080 (its `--config` json for the
+  `api_key`, `--port`), and pushes `strata_state`, `strata_tps`, `strata_prefill`, `strata_ctx`, `gpu_power`
+  and `vram_gb`. Every payload carries the `level` field that colors the built-in Pushed value widget, with
+  the thresholds kept as plain constants at the top of the file - `gpu_power` by absolute watts (100 / 300),
+  `vram_gb` by MiB left free (2000 / 500), `strata_ctx` by K tokens in use (320 / 440) - because this engine
+  parks at ~96 % VRAM and ~330 W by design, so share-of-limit thresholds would read red all day.
+  GPU numbers ride the agent's own resident `nvidia-smi -lms 1000` stream through loopback
+  `/api/state` (the script forks nothing; the nvidia-smi + 5 s cache path only serves as the
+  fallback when the agent is down). Pushed values reach the phone inside the 1 Hz state frame
+  (`pushItems`, see TESTLOG-push-stream-20261113.md) - no version-bump re-GET anymore.
+  `tools/power-standby/systemd/` mirrors the desk's boot chain: `phonebox-sleep.service` sleeps
+  the panel on shutdown, `phonebox-wake.service` wakes it after boot (both as executed live,
+  `pb-sleep.sh` / `pb-wake.sh` included), and `tools/power-standby/bootcheck/pb_bootcheck.sh`
+  (+ service) captures boot evidence at +120 s / +300 s with the phone-log windows spooled
+  DURING the event. config.default now ships powerStandby on with a 5 s grace.
+  `strata_model_state_html_widget.html` is the Custom HTML widget that reproduces the engine's own
+  *Model state* card: six pills (idle / unloaded / reading / generating / queued / error) that dim to
+  `opacity .38` rather than turning grey, the engine's exact wording (`98,304 / 141,037 tokens · 70%`,
+  `Writing a tool call: …`), blue bar while reading, and two deliberate upgrades over the built-in page -
+  the generating bar divides by `out_est` (p75 of the last eight outputs) instead of a client `max_tokens`
+  of 359,945, and where no honest denominator exists it paints a 32 % wash with a sweeping highlight, which
+  is what the React Monitor's `indeterminate` does. `gen_verify.mjs` builds an offline PhoneBox-sized shell
+  around the snippet and drives it through the widget's own `__msRender` hook, so all eight states can be
+  screenshotted without a phone; `TESTLOG-20261112.md` holds the measurements, the source-by-source mapping
+  back to `serve/web` and one-line rollbacks. The panel layout itself is archived as
+  `agent-config-snapshot-*.json` with the two LAN tokens **redacted**;
+  `tools/power-standby/` holds the host sleep/wake adb hooks - `pb-sleep.sh` deliberately does
+  *not* force-stop the panel app, that would forfeit the enumeration fast-wake - plus build
+  scripts, patch series and TESTLOGs with per-second timelines;
+  `tools/charge-guard/` caps charge at the PMIC with a daily 65-80 band and weekly/quarterly
+  calibration, the state machine verified by `pb_gtest.sh` (24 dry-run assertions).
+- **Secrets**: none in this branch's history. Deployed `~/bin` copies hold real credentials;
+  repo copies use the `PB_STRATA_FALLBACK_KEY` env var or `<REDACTED ...>` placeholders.
+  Release APKs per tag live beside the deployed agent, not in git (md5s in the TESTLOGs).
+- **Tuning notes**: `configured || connected` in the data-link check is intentional - it
+  survives warm reboots and charge caps; the cost is a port that feeds 5 V with the host off
+  keeps the panel lit (drop `|| connected` to trade that for ~1.5 min dark per boot).
+  First overnight ErP power-off (2026-11-13 -> 14) verified deep standby for real: 60 s no-lock
+  heartbeat, ~15 mA all night, the phone never woke - while the fuel gauge collapsed to 1 % purely
+  in display-land (voltage 3.89-4.02 V and the coulomb counter said ~60 %). Trust `charge=` and
+  `volt=` over the percent column on this 3T; the full evidence chain is
+  `tools/power-standby/TESTLOG-deep-overnight-20261114.md`.
+  `WebView` has `onPause()`/`onResume()`, no `resume()`. Compare cross-host timelines by
+  event order, not timestamps - the 3T clock drifts by minutes.
+
+
 ## Recent highlights
 
 The [changelog](CHANGELOG.md) lists every release. Some of the larger additions:

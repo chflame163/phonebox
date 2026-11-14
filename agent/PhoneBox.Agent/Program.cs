@@ -318,6 +318,9 @@ object State(IServiceProvider sp, long? ev)
         host = Environment.MachineName,
         cfgVersion = sp.GetRequiredService<ConfigStore>().Version,
         pushVersion = push.Version,
+        // the values ride the frame next to their version - the phone applies them in place instead of paying a
+        // second GET per change (fork 2026-11); the snapshot is the exact shape of GET /api/push's items
+        pushItems = push.Snapshot(),
         evSeq = push.Seq,
         events = ev is { } since ? push.Since(since) : [],
         pc = sp.GetRequiredService<SystemMonitor>().Snapshot(),
@@ -538,6 +541,18 @@ app.MapPost("/api/run/{id}", (string id, ConfigStore cfg, PushStore push, AudioC
 
 app.Lifetime.ApplicationStarted.Register(() =>
     app.Logger.LogInformation("PhoneBox agent {Version} ready on http://127.0.0.1:{Port} (config: {Path})", AppPaths.Version, Port, configPath));
+
+// Graceful stop (fork 2026-11): say goodbye with zeros. SealAndFloorAll floors every pushed key and persists
+// it; holding ~1.3 s here lets the live stream (one state frame per second) carry the floor to the phone, so
+// the panel - which outlives the server across ErP power cycles - caches 0 instead of the pre-shutdown numbers.
+// Covers SIGTERM at shutdown/reboot AND /api/restart self-restarts; pushd stops before phonebox by unit order.
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    var floored = app.Services.GetRequiredService<PushStore>().SealAndFloorAll();
+    if (floored == 0) return;
+    app.Logger.LogInformation("graceful stop: floored {Count} pushed values so the phone sleeps on zeros", floored);
+    Thread.Sleep(1300); // one more state frame per live stream, then let the host shut down
+});
 
 app.Run();
 

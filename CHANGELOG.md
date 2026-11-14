@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Power standby rewrite (phone app): the panel no longer trusts "is USB power present?" — it sleeps when the
+  agent goes quiet (12 s of data silence plus `display.powerStandbyDelaySec` grace) and wakes the moment the
+  host re-enumerates the USB link (<1 s measured). `requestLayout()` after releasing the keep-awake flag,
+  `requestDismissKeyguard()` on wake, sticky-battery edge fallback for full-charge HAL quirks. New normal
+  permissions: WAKE_LOCK, DISABLE_KEYGUARD, KILL_BACKGROUND_PROCESSES.
+- Deep standby: five minutes after the screen sleeps the panel pauses its WebView and SSE loop and trims
+  background apps — screen-off drain 68 mA to 27 mA on the test device; a bare 60 s heartbeat still wakes the
+  panel when the server returns.
+- Floors: cold start and graceful stop send floored zeros instead of last session's numbers
+  (`PushStore.Floored` / `SealAndFloorAll`), and the panel locally floors pushed values, stat cards and the
+  process lists within 5 s of losing the stream — a hard power cut no longer leaves a frozen full panel.
+- Protocol: pushed values ride the 1 Hz state frame (`state.pushItems`), so there is no second GET per change;
+  agent and app may be updated in any order.
+- Defaults: `display.powerStandbyDelaySec` 30 s to 5 s in shipped configs.
+
 ## 0.9.4 — 2026-11-11
 
 A full audit of the agent, the panel, the settings page and the tooling. Every fix below has a regression test or a
