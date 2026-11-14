@@ -119,6 +119,11 @@ wakes on the **enumeration event** instead.
 - **Tuning notes**: `configured || connected` in the data-link check is intentional - it
   survives warm reboots and charge caps; the cost is a port that feeds 5 V with the host off
   keeps the panel lit (drop `|| connected` to trade that for ~1.5 min dark per boot).
+  First overnight ErP power-off (2026-11-13 -> 14) verified deep standby for real: 60 s no-lock
+  heartbeat, ~15 mA all night, the phone never woke - while the fuel gauge collapsed to 1 % purely
+  in display-land (voltage 3.89-4.02 V and the coulomb counter said ~60 %). Trust `charge=` and
+  `volt=` over the percent column on this 3T; the full evidence chain is
+  `tools/power-standby/TESTLOG-deep-overnight-20261114.md`.
   `WebView` has `onPause()`/`onResume()`, no `resume()`. Compare cross-host timelines by
   event order, not timestamps - the 3T clock drifts by minutes.
 
