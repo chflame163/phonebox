@@ -30,6 +30,7 @@ public sealed partial class PushStore
     private readonly System.Threading.Timer _saveTimer;
     private long _seq;
     private int _saveQueued;
+    private int _stopping;
     private long _version = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     /// <param name="dataPath">Where values are kept (tests pass a temporary file); default: data.json next to config.json.</param>
@@ -42,7 +43,7 @@ public sealed partial class PushStore
         {
             if (File.Exists(_dataPath))
                 foreach (var (k, v) in JsonSerializer.Deserialize<Dictionary<string, PushItem>>(File.ReadAllText(_dataPath)) ?? [])
-                    if (ValidKey(k)) _items[k] = FloorOnLoad(v);
+                    if (ValidKey(k)) _items[k] = Floored(v);
         }
         catch (Exception ex) { log.LogWarning("could not read {Path}: {Msg}", _dataPath, ex.Message); }
     }
@@ -74,6 +75,7 @@ public sealed partial class PushStore
     public string? Set(string key, JsonElement data, int? ttlSec)
     {
         if (!ValidKey(key)) return "key must be 1-64 characters: letters, digits, '.', '_' or '-'";
+        if (Volatile.Read(ref _stopping) != 0) return null; // stop in progress: the floor is already out, don't let a late push resurrect it
         PurgeExpired(); // expired values do not count against the limit
         if (!_items.ContainsKey(key) && _items.Count >= MaxItems) return $"too many keys (max {MaxItems}); delete some first";
         // {"ttl": 300, ...} inside the payload works too
@@ -83,6 +85,23 @@ public sealed partial class PushStore
         _items[key] = new PushItem(data.Clone(), now, ttlSec is > 0 ? now + ttlSec.Value * 1000L : null);
         Changed();
         return null;
+    }
+
+    /// <summary>Graceful stop (fork 2026-11): seal the store so no later push can resurrect real values, floor
+    /// every key to its minimum and persist immediately. The live stream sends one state frame per second, so a
+    /// caller that then waits ~1.3 s gets the zeros onto the phone before the process dies - the panel stops
+    /// keeping pre-shutdown numbers in its own RAM, wakes after a reboot already showing 0, and the next boot's
+    /// load finds the floored data.json anyway. Returns the number of keys floored.</summary>
+    public int SealAndFloorAll()
+    {
+        Interlocked.Exchange(ref _stopping, 1);
+        var floored = 0;
+        foreach (var k in _items.Keys.ToArray())
+            if (_items.TryGetValue(k, out var v)) { _items[k] = Floored(v); floored++; }
+        if (floored == 0) return 0;
+        Changed();
+        Persist();
+        return floored;
     }
 
     public bool Remove(string key)
@@ -127,8 +146,9 @@ public sealed partial class PushStore
     /// forever. So a cold start presents every restored key at its lowest value: objects floor to {"value":0} with
     /// the unit kept for context, arrays to empty, anything else to zero. At is re-stamped (phones skip the redraw
     /// when item.at is unchanged) and ExpiresAt is dropped so the floor rides until a real push replaces it.
+    /// Used both on load and at a graceful stop (SealAndFloorAll).
     /// </summary>
-    private static PushItem FloorOnLoad(PushItem v)
+    private static PushItem Floored(PushItem v)
     {
         JsonElement floor;
         switch (v.Data.ValueKind)
