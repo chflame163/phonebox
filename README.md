@@ -64,6 +64,14 @@ wakes on the **enumeration event** instead.
      deviceidle now actually reaches light idle.
   4. Battery edges ride `ACTION_BATTERY_CHANGED`, and `STATUS=CHARGING|FULL` counts as
      plugged even when `EXTRA_PLUGGED` misreads 0 at 100 % on some HALs.
+- **Cold start sends the floor, not last session's numbers**: restored push values used to be served
+  verbatim from `data.json`, and a 1 s producer re-armed the 2 s persist debounce every tick, so the
+  file never left `{}` (the numbers people saw at boot were the phone app's own pre-shutdown RAM echo).
+  Now `PushStore.Load()` floors every restored key - objects to `{"value":0}` with the unit kept, arrays
+  to empty, scalars to 0, `At` re-stamped so phones actually redraw, `ExpiresAt` dropped so the floor
+  rides until a real push replaces it - and a pending disk write is never re-armed, so the store
+  persists every ~2 s. The panel therefore starts at 0 W / 0 GB / 0 KB / 0 tok/s with Model state idle.
+  Four-stage on-desk proof and rollback: `tools/panel-metrics/TESTLOG-push-floor-20261114.md`.
 - **Ops scripts** (deployed as systemd user timers, archived in the repo):
   `tools/panel-metrics/` feeds the panel from the Strata inference engine: `pb_strata_push.py` runs resident (`pb-strata-pushd.service`, one push per second; the old
   1 s oneshot+timer pair is archived beside it as the rollback), auto-discovers whichever instance owns port 8080 (its `--config` json for the
